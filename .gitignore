@@ -1,17 +1,6 @@
-# Python
-venv/
+backend/venv/
+backend/uploads/*
+!backend/uploads/.gitkeep
+
 __pycache__/
 *.pyc
-
-# Node
-node_modules/
-
-# Environment files
-.env
-
-# VS Code
-.vscode/
-
-# OS
-.DS_Store
-Thumbs.db
