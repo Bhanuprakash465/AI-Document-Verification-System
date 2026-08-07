@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VerifyAI — Document Verification</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header>
+        <a class="brand" href="/app"><span class="brand-mark">✓</span> VerifyAI</a>
+        <a class="docs-link" href="/docs" target="_blank" rel="noreferrer">API docs ↗</a>
+      </header>
+      <section class="hero">
+        <p class="eyebrow">Document intelligence</p>
+        <h1>Verify identity documents<br /><em>in one secure step.</em></h1>
+        <p class="lede">Upload an Aadhaar image or PDF. We enhance it, read the text, and return structured, validated fields.</p>
+      </section>
+      <section class="workspace">
+        <form id="upload-form" class="drop-zone">
+          <input id="file-input" type="file" accept=".jpg,.jpeg,.png,.pdf,image/jpeg,image/png,application/pdf" hidden />
+          <div class="upload-icon">↑</div>
+          <h2>Drop a document here</h2>
+          <p>JPG, PNG or PDF · Maximum 10 MB</p>
+          <button type="button" id="browse-button">Choose file</button>
+          <p id="file-name" class="file-name" aria-live="polite"></p>
+          <button id="verify-button" type="submit" class="verify" disabled>Verify document <span>→</span></button>
+        </form>
+        <aside class="how-it-works">
+          <p class="eyebrow">How it works</p>
+          <ol>
+            <li><span>01</span> Upload a clear document</li>
+            <li><span>02</span> OCR extracts the text</li>
+            <li><span>03</span> Fields are validated</li>
+          </ol>
+        </aside>
+      </section>
+      <section id="result" class="result hidden" aria-live="polite"></section>
+      <p class="notice">Sensitive documents are processed only for this verification request. Do not upload documents you are not authorized to process.</p>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>

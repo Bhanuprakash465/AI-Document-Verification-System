@@ -1,6 +1,19 @@
-backend/venv/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.env
+
+# Database
+*.db
+
+# Uploaded documents
 backend/uploads/*
 !backend/uploads/.gitkeep
 
-__pycache__/
-*.pyc
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
