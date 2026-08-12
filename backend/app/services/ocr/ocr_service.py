@@ -1,30 +1,23 @@
-"""Fast OCR adapter for document verification."""
+"""OCR service for VerifyAI."""
 
 from functools import lru_cache
+from pathlib import Path
 
 from fastapi import HTTPException
 
-
-# =========================================================
-# OCR MODEL
-# =========================================================
 
 @lru_cache(maxsize=1)
 def _get_model():
 
     try:
 
-        from doctr.models import ocr_predictor
-
         print("[OCR] Loading DocTR model...")
+
+        from doctr.models import ocr_predictor
 
         model = ocr_predictor(
             pretrained=True,
-            det_arch="db_resnet50",
-            reco_arch="crnn_vgg16_bn",
             assume_straight_pages=True,
-            straighten_pages=False,
-            detect_language=False,
         )
 
         print("[OCR] DocTR model loaded.")
@@ -35,17 +28,13 @@ def _get_model():
 
         raise RuntimeError(
             "OCR is not available. Install the backend "
-            "requirements and ensure the DocTR model "
-            "weights are available."
+            "requirements and ensure DocTR model weights "
+            "are available."
         ) from exc
 
 
-# =========================================================
-# OCR EXTRACTION
-# =========================================================
-
 def extract_text(
-    image_path: str
+    image_path: str,
 ) -> list[str]:
 
     try:
@@ -53,51 +42,103 @@ def extract_text(
         from doctr.io import DocumentFile
 
 
-        # -------------------------------------------------
-        # Load document
-        # -------------------------------------------------
+        path = Path(image_path)
 
-        if image_path.lower().endswith(".pdf"):
+
+        # =================================================
+        # LOAD DOCUMENT
+        # =================================================
+
+        if path.suffix.lower() == ".pdf":
 
             document = DocumentFile.from_pdf(
-                image_path
+                str(path)
             )
 
         else:
 
             document = DocumentFile.from_images(
-                image_path
+                str(path)
             )
 
 
-        # -------------------------------------------------
-        # Get cached model
-        # -------------------------------------------------
+        # =================================================
+        # OCR
+        # =================================================
 
         model = _get_model()
 
-
-        # -------------------------------------------------
-        # Run OCR
-        # -------------------------------------------------
-
-        result = model(
-            document
-        )
+        result = model(document)
 
 
-        # -------------------------------------------------
-        # Extract text
-        # -------------------------------------------------
+        # =================================================
+        # EXTRACT OCR TEXT
+        # =================================================
 
-        rendered_text = result.render()
+        lines = []
 
 
-        return [
-            line.strip()
-            for line in rendered_text.splitlines()
-            if line.strip()
-        ]
+        for page in result.pages:
+
+            for block in page.blocks:
+
+                for line in block.lines:
+
+                    words = []
+
+                    for word in line.words:
+
+                        value = (
+                            word.value
+                            if hasattr(word, "value")
+                            else str(word)
+                        )
+
+                        value = value.strip()
+
+                        if value:
+
+                            words.append(value)
+
+
+                    if words:
+
+                        text = " ".join(words).strip()
+
+                        if text:
+
+                            lines.append(text)
+
+
+        # =================================================
+        # FALLBACK
+        # =================================================
+
+        if not lines:
+
+            rendered = result.render()
+
+            lines = [
+                line.strip()
+                for line in rendered.splitlines()
+                if line.strip()
+            ]
+
+
+        # =================================================
+        # DEBUG
+        # =================================================
+
+        print("[OCR] Extracted lines:")
+
+        for index, line in enumerate(lines):
+
+            print(
+                f"[OCR {index}] {line}"
+            )
+
+
+        return lines
 
 
     except HTTPException:
@@ -108,7 +149,8 @@ def extract_text(
     except Exception as exc:
 
         print(
-            f"[OCR ERROR] {exc}"
+            "[OCR ERROR]",
+            str(exc)
         )
 
         raise HTTPException(
@@ -117,5 +159,5 @@ def extract_text(
                 "OCR processing failed. "
                 "Confirm that DocTR and its model "
                 "weights are available."
-            )
+            ),
         ) from exc

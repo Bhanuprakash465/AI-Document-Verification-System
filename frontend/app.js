@@ -27,7 +27,9 @@ const API_BASE = window.location.pathname.startsWith("/app")
 window.addEventListener("load", () => {
 
   setTimeout(() => {
-    loader.classList.add("loaded");
+    if (loader) {
+      loader.classList.add("loaded");
+    }
   }, 700);
 
 });
@@ -71,7 +73,23 @@ function setFile(file) {
 
 
   // Put file into input
-  input.files = createFileList(file);
+  try {
+
+    input.files = createFileList(file);
+
+  } catch (error) {
+
+    console.error(
+      "Unable to set selected file:",
+      error
+    );
+
+    showError(
+      "Unable to select this file. Please try again."
+    );
+
+    return;
+  }
 
 
   // Update UI
@@ -88,7 +106,8 @@ function setFile(file) {
 
 function createFileList(file) {
 
-  const dataTransfer = new DataTransfer();
+  const dataTransfer =
+    new DataTransfer();
 
   dataTransfer.items.add(file);
 
@@ -195,7 +214,14 @@ async function verifyDocument() {
 
   const file = input.files[0];
 
-  if (!file) return;
+  if (!file) {
+
+    showError(
+      "Please select a document first."
+    );
+
+    return;
+  }
 
 
   // Disable UI
@@ -212,7 +238,7 @@ async function verifyDocument() {
   `;
 
 
-  // Scroll result into view area
+  // Hide previous result
   result.classList.add("hidden");
 
 
@@ -260,6 +286,12 @@ async function verifyDocument() {
     }
 
 
+    console.log(
+      "Verification response:",
+      data
+    );
+
+
     showResult(data);
 
 
@@ -296,6 +328,148 @@ async function verifyDocument() {
 }
 
 
+// =========================================================
+// DOCUMENT FIELD CONFIGURATION
+// =========================================================
+
+const DOCUMENT_FIELDS = {
+
+  aadhaar: [
+    ["FULL NAME", "name"],
+    ["AADHAAR NUMBER", "aadhaar_number"],
+    ["DATE OF BIRTH", "dob"],
+    ["GENDER", "gender"],
+    ["ADDRESS", "address"],
+    ["PIN CODE", "pin_code"]
+  ],
+
+  pan: [
+    ["FULL NAME", "name"],
+    ["PAN NUMBER", "pan_number"],
+    ["FATHER NAME", "father_name"],
+    ["DATE OF BIRTH", "dob"]
+  ],
+
+  passport: [
+    ["FULL NAME", "name"],
+    ["PASSPORT NUMBER", "passport_number"],
+    ["NATIONALITY", "nationality"],
+    ["DATE OF BIRTH", "dob"],
+    ["PLACE OF BIRTH", "place_of_birth"],
+    ["DATE OF ISSUE", "date_of_issue"],
+    ["DATE OF EXPIRY", "date_of_expiry"]
+  ],
+
+  voter_id: [
+    ["FULL NAME", "name"],
+    ["VOTER ID", "voter_id"],
+    ["EPIC NUMBER", "epic_number"],
+    ["DATE OF BIRTH", "dob"],
+    ["GENDER", "gender"],
+    ["ADDRESS", "address"]
+  ],
+
+  driving_license: [
+    ["FULL NAME", "name"],
+    ["LICENCE NUMBER", "license_number"],
+    ["DATE OF BIRTH", "dob"],
+    ["DATE OF ISSUE", "date_of_issue"],
+    ["DATE OF EXPIRY", "date_of_expiry"],
+    ["ADDRESS", "address"]
+  ]
+
+};
+
+
+// =========================================================
+// DOCUMENT DISPLAY NAMES
+// =========================================================
+
+const DOCUMENT_NAMES = {
+
+  aadhaar: "AADHAAR CARD",
+
+  pan: "PAN CARD",
+
+  passport: "PASSPORT",
+
+  voter_id: "VOTER ID",
+
+  driving_license: "DRIVING LICENCE",
+
+  unknown: "UNKNOWN DOCUMENT"
+
+};
+
+
+// ---------------------------------------------------------
+// Get document fields
+// ---------------------------------------------------------
+
+function getDocumentFields(
+  documentType,
+  fields
+) {
+
+  const configuredFields =
+    DOCUMENT_FIELDS[documentType];
+
+
+  if (configuredFields) {
+
+    return configuredFields;
+
+  }
+
+
+  // Generic fallback
+  return [
+
+    ["FULL NAME", "name"],
+
+    ["DATE OF BIRTH", "dob"],
+
+    ["ADDRESS", "address"]
+
+  ].filter(
+    ([label, key]) =>
+      fields[key] !== null &&
+      fields[key] !== undefined
+  );
+
+}
+
+
+// ---------------------------------------------------------
+// Get document name
+// ---------------------------------------------------------
+
+function getDocumentName(
+  documentType,
+  data
+) {
+
+  if (
+    data.document &&
+    data.document.display_name
+  ) {
+
+    return data.document.display_name
+      .toUpperCase();
+
+  }
+
+
+  return (
+    DOCUMENT_NAMES[documentType] ||
+    documentType
+      .replace(/_/g, " ")
+      .toUpperCase()
+  );
+
+}
+
+
 // ---------------------------------------------------------
 // Result rendering
 // ---------------------------------------------------------
@@ -305,51 +479,79 @@ function showResult(data) {
   const fields =
     data.fields || {};
 
+
   const validation =
     data.validation || {};
 
+
+  const documentInfo =
+    data.document || {};
+
+
+  const documentType =
+    (
+      data.document_type ||
+      fields.document_type ||
+      documentInfo.document_type ||
+      "unknown"
+    ).toLowerCase();
+
+
   const valid =
     Boolean(validation.valid);
+
+
+  const displayName =
+    getDocumentName(
+      documentType,
+      data
+    );
+
+
+  // =======================================================
+  // Build fields dynamically
+  // =======================================================
+
+  const fieldDefinitions =
+    getDocumentFields(
+      documentType,
+      fields
+    );
 
 
   const rows = [
 
     [
       "DOCUMENT TYPE",
-      fields.document_type
+      displayName
     ],
 
-    [
-      "FULL NAME",
-      fields.name
-    ],
-
-    [
-      "AADHAAR NUMBER",
-      fields.aadhaar_number
-    ],
-
-    [
-      "DATE OF BIRTH",
-      fields.dob
-    ],
-
-    [
-      "GENDER",
-      fields.gender
-    ],
-
-    [
-      "PIN CODE",
-      fields.pin_code
-    ]
+    ...fieldDefinitions
 
   ];
 
 
   const fieldsHTML = rows
     .map(
-      ([label, value]) => {
+      ([label, keyOrValue]) => {
+
+        let value;
+
+
+        // Document type is already a display value
+        if (
+          label === "DOCUMENT TYPE"
+        ) {
+
+          value = keyOrValue;
+
+        } else {
+
+          value =
+            fields[keyOrValue];
+
+        }
+
 
         return `
           <div class="result-field">
@@ -360,7 +562,8 @@ function showResult(data) {
 
             <strong>
               ${escapeHtml(
-                value || "NOT DETECTED"
+                value ||
+                "NOT DETECTED"
               )}
             </strong>
 
@@ -371,6 +574,10 @@ function showResult(data) {
     )
     .join("");
 
+
+  // =======================================================
+  // Validation errors
+  // =======================================================
 
   const errors =
     Array.isArray(validation.errors)
@@ -390,8 +597,9 @@ function showResult(data) {
           <br />
 
           ${errors
-            .map(error =>
-              escapeHtml(error)
+            .map(
+              error =>
+                escapeHtml(error)
             )
             .join("<br />")}
 
@@ -399,6 +607,52 @@ function showResult(data) {
       `
       : "";
 
+
+  // =======================================================
+  // Confidence
+  // =======================================================
+
+  const confidence =
+    documentInfo.confidence;
+
+
+  const confidenceHTML =
+    typeof confidence === "number"
+      ? `
+        <div class="result-confidence">
+
+          <span>
+            DETECTION CONFIDENCE
+          </span>
+
+          <strong>
+            ${Math.round(
+              confidence * 100
+            )}%
+          </strong>
+
+        </div>
+      `
+      : "";
+
+
+  // =======================================================
+  // Status
+  // =======================================================
+
+  const statusText =
+    valid
+      ? "VALIDATED"
+      : (
+          validation.status === "unsupported"
+            ? "UNSUPPORTED"
+            : "NEEDS REVIEW"
+        );
+
+
+  // =======================================================
+  // Result HTML
+  // =======================================================
 
   result.innerHTML = `
 
@@ -427,12 +681,23 @@ function showResult(data) {
             : "invalid"
         }"
       >
-        ${
-          valid
-            ? "VALIDATED"
-            : "NEEDS REVIEW"
-        }
+        ${statusText}
       </span>
+
+    </div>
+
+
+    <div class="result-document-type">
+
+      <span>
+        DETECTED DOCUMENT
+      </span>
+
+      <strong>
+        ${escapeHtml(
+          displayName
+        )}
+      </strong>
 
     </div>
 
@@ -444,15 +709,24 @@ function showResult(data) {
     </div>
 
 
+    ${confidenceHTML}
+
+
     ${errorHTML}
+
 
   `;
 
 
-  result.classList.remove("hidden");
+  result.classList.remove(
+    "hidden"
+  );
 
 
+  // =======================================================
   // Smooth scroll
+  // =======================================================
+
   setTimeout(() => {
 
     result.scrollIntoView({
@@ -479,7 +753,8 @@ function showError(message) {
         VERIFICATION ERROR
       </strong>
 
-      <br /><br />
+      <br />
+      <br />
 
       ${escapeHtml(message)}
 
@@ -488,7 +763,9 @@ function showError(message) {
   `;
 
 
-  result.classList.remove("hidden");
+  result.classList.remove(
+    "hidden"
+  );
 
 
   result.scrollIntoView({
@@ -513,14 +790,21 @@ function escapeHtml(value) {
         const entities = {
 
           "&": "&amp;",
+
           "<": "&lt;",
+
           ">": "&gt;",
+
           "'": "&#39;",
+
           '"': "&quot;"
 
         };
 
-        return entities[character];
+
+        return entities[
+          character
+        ];
 
       }
     );
@@ -538,7 +822,8 @@ document.addEventListener(
 
     if (
       event.key === "Enter" &&
-      document.activeElement === verifyButton &&
+      document.activeElement ===
+        verifyButton &&
       !verifyButton.disabled
     ) {
 
