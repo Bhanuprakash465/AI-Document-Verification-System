@@ -1,69 +1,118 @@
 /* =========================================================
-   VERIFYAI FRONTEND
+   VERIFYAI - FRONTEND APPLICATION
    ========================================================= */
 
-const input = document.querySelector("#file-input");
-const form = document.querySelector("#upload-form");
-const browseButton = document.querySelector("#browse-button");
-const verifyButton = document.querySelector("#verify-button");
-const fileName = document.querySelector("#file-name");
-const result = document.querySelector("#result");
-const loader = document.querySelector("#page-loader");
+const API_URL = "/verify-document";
 
+/* =========================================================
+   DOM ELEMENTS
+   ========================================================= */
 
-// =========================================================
-// API
-// =========================================================
+const fileInput = document.getElementById("fileInput");
+const chooseFileButton = document.getElementById("chooseFile");
+const uploadPanel = document.getElementById("uploadPanel");
+const uploadContent = document.getElementById("uploadContent");
+const fileNameElement = document.getElementById("fileName");
+const verifyButton = document.getElementById("verifyButton");
 
-const API_BASE = window.location.pathname.startsWith("/app")
-    ? ""
-    : "http://127.0.0.1:8000";
+const resultSection = document.getElementById("result");
+const resultGrid = document.getElementById("resultGrid");
+const resultStatus = document.getElementById("resultStatus");
+const resultErrors = document.getElementById("resultErrors");
 
+const detectedDocumentElement =
+    document.getElementById("detectedDocument");
 
-// =========================================================
-// PAGE LOADER
-// =========================================================
+const detectionConfidenceElement =
+    document.getElementById("detectionConfidence");
 
-window.addEventListener("load", () => {
+/* =========================================================
+   STATE
+   ========================================================= */
 
-    setTimeout(() => {
+let selectedFile = null;
 
-        if (loader) {
-            loader.classList.add("loaded");
+/* =========================================================
+   INITIAL STATE
+   ========================================================= */
+
+if (verifyButton) {
+    verifyButton.disabled = true;
+}
+
+if (resultSection) {
+    resultSection.classList.add("hidden");
+}
+
+/* =========================================================
+   CHOOSE FILE
+   ========================================================= */
+
+if (chooseFileButton && fileInput) {
+    chooseFileButton.addEventListener("click", () => {
+        fileInput.click();
+    });
+}
+
+/* =========================================================
+   FILE SELECTED
+   ========================================================= */
+
+if (fileInput) {
+    fileInput.addEventListener("change", (event) => {
+        const files = event.target.files;
+
+        if (!files || files.length === 0) {
+            return;
         }
 
-    }, 700);
+        handleSelectedFile(files[0]);
+    });
+}
 
-});
+/* =========================================================
+   DRAG AND DROP
+   ========================================================= */
 
+if (uploadPanel) {
 
-// =========================================================
-// FILE HANDLING
-// =========================================================
+    uploadPanel.addEventListener("dragover", (event) => {
 
-function setFile(file) {
+        event.preventDefault();
 
-    if (!file) {
-        return;
-    }
-
-    // -----------------------------------------------------
-    // FILE SIZE
-    // -----------------------------------------------------
-
-    if (file.size > 10 * 1024 * 1024) {
-
-        showError(
-            "The selected file exceeds the 10 MB upload limit."
-        );
-
-        return;
-    }
+        uploadPanel.classList.add("dragging");
+    });
 
 
-    // -----------------------------------------------------
-    // FILE TYPE
-    // -----------------------------------------------------
+    uploadPanel.addEventListener("dragleave", (event) => {
+
+        event.preventDefault();
+
+        uploadPanel.classList.remove("dragging");
+    });
+
+
+    uploadPanel.addEventListener("drop", (event) => {
+
+        event.preventDefault();
+
+        uploadPanel.classList.remove("dragging");
+
+        const files = event.dataTransfer.files;
+
+        if (!files || files.length === 0) {
+            return;
+        }
+
+        handleSelectedFile(files[0]);
+    });
+}
+
+/* =========================================================
+   HANDLE SELECTED FILE
+   ========================================================= */
+
+function handleSelectedFile(file) {
 
     const allowedTypes = [
         "image/jpeg",
@@ -71,188 +120,185 @@ function setFile(file) {
         "application/pdf"
     ];
 
+    const maxSize = 10 * 1024 * 1024;
+
+    /* -----------------------------------------------------
+       TYPE CHECK
+       ----------------------------------------------------- */
+
     if (!allowedTypes.includes(file.type)) {
 
-        showError(
-            "Please upload a JPG, PNG or PDF document."
+        showUploadError(
+            "Only JPG, PNG and PDF files are supported."
         );
+
+        resetFile();
 
         return;
     }
 
 
-    // -----------------------------------------------------
-    // SET INPUT
-    // -----------------------------------------------------
+    /* -----------------------------------------------------
+       SIZE CHECK
+       ----------------------------------------------------- */
 
-    input.files = createFileList(file);
+    if (file.size > maxSize) {
+
+        showUploadError(
+            "The selected file is larger than 10 MB."
+        );
+
+        resetFile();
+
+        return;
+    }
 
 
-    // -----------------------------------------------------
-    // UPDATE UI
-    // -----------------------------------------------------
+    /* -----------------------------------------------------
+       SAVE FILE
+       ----------------------------------------------------- */
 
-    fileName.textContent =
-        file.name.toUpperCase();
+    selectedFile = file;
 
-    verifyButton.disabled = false;
 
-    result.classList.add("hidden");
+    /* -----------------------------------------------------
+       DISPLAY FILE NAME
+       ----------------------------------------------------- */
 
-    result.innerHTML = "";
+    if (fileNameElement) {
+
+        fileNameElement.textContent =
+            file.name.toUpperCase();
+    }
+
+
+    /* -----------------------------------------------------
+       ENABLE VERIFY BUTTON
+       ----------------------------------------------------- */
+
+    if (verifyButton) {
+        verifyButton.disabled = false;
+    }
+
+
+    /* -----------------------------------------------------
+       CLEAR PREVIOUS RESULT
+       ----------------------------------------------------- */
+
+    if (resultSection) {
+        resultSection.classList.add("hidden");
+    }
+
+    if (resultGrid) {
+        resultGrid.innerHTML = "";
+    }
+
+    if (resultErrors) {
+        resultErrors.innerHTML = "";
+        resultErrors.classList.add("hidden");
+    }
 }
 
+/* =========================================================
+   UPLOAD ERROR
+   ========================================================= */
 
-function createFileList(file) {
+function showUploadError(message) {
 
-    const dataTransfer = new DataTransfer();
+    if (!fileNameElement) {
+        return;
+    }
 
-    dataTransfer.items.add(file);
+    fileNameElement.textContent =
+        message.toUpperCase();
 
-    return dataTransfer.files;
+    fileNameElement.style.color = "#9b1c1c";
 }
 
+/* =========================================================
+   RESET FILE
+   ========================================================= */
 
-// =========================================================
-// BROWSE BUTTON
-// =========================================================
+function resetFile() {
 
-browseButton.addEventListener(
-    "click",
-    () => input.click()
-);
+    selectedFile = null;
 
-
-// =========================================================
-// INPUT CHANGE
-// =========================================================
-
-input.addEventListener(
-    "change",
-    () => {
-
-        const file = input.files[0];
-
-        setFile(file);
-
+    if (fileInput) {
+        fileInput.value = "";
     }
-);
 
-
-// =========================================================
-// DRAG & DROP
-// =========================================================
-
-[
-    "dragenter",
-    "dragover"
-].forEach(eventName => {
-
-    form.addEventListener(
-        eventName,
-        event => {
-
-            event.preventDefault();
-
-            form.classList.add("dragging");
-
-        }
-    );
-
-});
-
-
-[
-    "dragleave",
-    "drop"
-].forEach(eventName => {
-
-    form.addEventListener(
-        eventName,
-        event => {
-
-            event.preventDefault();
-
-            form.classList.remove("dragging");
-
-        }
-    );
-
-});
-
-
-form.addEventListener(
-    "drop",
-    event => {
-
-        const file =
-            event.dataTransfer.files[0];
-
-        setFile(file);
-
+    if (fileNameElement) {
+        fileNameElement.textContent = "";
+        fileNameElement.style.color = "";
     }
-);
 
+    if (verifyButton) {
+        verifyButton.disabled = true;
+    }
+}
 
-// =========================================================
-// VERIFY BUTTON
-// =========================================================
+/* =========================================================
+   VERIFY DOCUMENT
+   ========================================================= */
 
-verifyButton.addEventListener(
-    "click",
-    verifyDocument
-);
+if (verifyButton) {
 
+    verifyButton.addEventListener("click", async () => {
 
-// =========================================================
-// VERIFY DOCUMENT
-// =========================================================
+        if (!selectedFile) {
+            return;
+        }
+
+        await verifyDocument();
+    });
+}
+
+/* =========================================================
+   MAIN VERIFICATION FUNCTION
+   ========================================================= */
 
 async function verifyDocument() {
 
-    const file = input.files[0];
-
-    if (!file) {
+    if (!selectedFile) {
         return;
     }
 
 
-    // -----------------------------------------------------
-    // DISABLE UI
-    // -----------------------------------------------------
+    /* -----------------------------------------------------
+       BUTTON LOADING STATE
+       ----------------------------------------------------- */
 
     verifyButton.disabled = true;
 
-    verifyButton.innerHTML = `
-        <span class="verify-label">
-            ANALYSING DOCUMENT...
-        </span>
+    const originalButtonHTML =
+        verifyButton.innerHTML;
 
-        <span class="verify-arrow">
-            ↗
-        </span>
+    verifyButton.innerHTML = `
+        <span>PROCESSING DOCUMENT...</span>
+        <span class="verify-arrow">↻</span>
     `;
 
 
-    result.classList.add("hidden");
-
-
-    // -----------------------------------------------------
-    // FORM DATA
-    // -----------------------------------------------------
+    /* -----------------------------------------------------
+       FORM DATA
+       ----------------------------------------------------- */
 
     const formData = new FormData();
 
     formData.append(
         "file",
-        file
+        selectedFile
     );
 
 
     try {
 
+        /* -------------------------------------------------
+           API REQUEST
+           ------------------------------------------------- */
+
         const response = await fetch(
-            `${API_BASE}/verify-document`,
+            API_URL,
             {
                 method: "POST",
                 body: formData
@@ -260,587 +306,314 @@ async function verifyDocument() {
         );
 
 
-        // -------------------------------------------------
-        // RESPONSE
-        // -------------------------------------------------
+        /* -------------------------------------------------
+           READ RESPONSE
+           ------------------------------------------------- */
 
-        let data;
+        let data = null;
 
         try {
 
             data = await response.json();
 
-        } catch {
+        } catch (jsonError) {
 
             throw new Error(
-                "The verification server returned an invalid response."
+                "The server returned an invalid response."
             );
-
         }
 
+
+        /* -------------------------------------------------
+           HTTP ERROR
+           ------------------------------------------------- */
 
         if (!response.ok) {
 
-            throw new Error(
-                data.detail ||
-                "Verification could not be completed."
-            );
+            let message =
+                "Document verification failed.";
 
+            if (data) {
+
+                if (typeof data.detail === "string") {
+
+                    message = data.detail;
+
+                } else if (
+                    data.detail &&
+                    typeof data.detail.message === "string"
+                ) {
+
+                    message = data.detail.message;
+                }
+            }
+
+            throw new Error(message);
         }
 
 
-        showResult(data);
+        /* -------------------------------------------------
+           DISPLAY RESULT
+           ------------------------------------------------- */
+
+        renderVerificationResult(data);
 
 
     } catch (error) {
 
-        console.error(error);
+        console.error(
+            "Verification error:",
+            error
+        );
 
-
-        const message =
-            error instanceof TypeError
-                ? "Unable to connect to the verification server. Please make sure FastAPI is running."
-                : error.message;
-
-
-        showError(message);
+        renderErrorResult(
+            error.message ||
+            "Unable to process the document."
+        );
 
 
     } finally {
 
-        verifyButton.disabled = false;
+        /* -------------------------------------------------
+           RESTORE BUTTON
+           ------------------------------------------------- */
 
-        verifyButton.innerHTML = `
-            <span class="verify-label">
-                VERIFY DOCUMENT
-            </span>
+        verifyButton.disabled =
+            !selectedFile;
 
-            <span class="verify-arrow">
-                →
-            </span>
-        `;
-
+        verifyButton.innerHTML =
+            originalButtonHTML;
     }
-
 }
 
+/* =========================================================
+   RENDER VERIFICATION RESULT
+   ========================================================= */
 
-// =========================================================
-// RESULT FIELD HELPER
-// =========================================================
+function renderVerificationResult(data) {
 
-function createField(
-    label,
-    value
-) {
-
-    return `
-        <div class="result-field">
-
-            <label>
-                ${escapeHtml(label)}
-            </label>
-
-            <strong>
-                ${escapeHtml(
-                    value || "NOT DETECTED"
-                )}
-            </strong>
-
-        </div>
-    `;
-}
-
-
-// =========================================================
-// RESULT FIELDS BY DOCUMENT TYPE
-// =========================================================
-
-function getDocumentFields(
-    documentType,
-    fields
-) {
-
-    // =====================================================
-    // AADHAAR
-    // =====================================================
-
-    if (documentType === "aadhaar") {
-
-        return [
-
-            [
-                "FULL NAME",
-                fields.name
-            ],
-
-            [
-                "AADHAAR NUMBER",
-                fields.aadhaar_number
-            ],
-
-            [
-                "DATE OF BIRTH",
-                fields.dob
-            ],
-
-            [
-                "GENDER",
-                fields.gender
-            ],
-
-            [
-                "PIN CODE",
-                fields.pin_code
-            ],
-
-            [
-                "ADDRESS",
-                fields.address
-            ]
-
-        ];
+    if (!resultSection) {
+        return;
     }
 
 
-    // =====================================================
-    // PAN
-    // =====================================================
-
-    if (documentType === "pan") {
-
-        return [
-
-            [
-                "FULL NAME",
-                fields.name
-            ],
-
-            [
-                "PAN NUMBER",
-                fields.pan_number
-            ],
-
-            [
-                "FATHER NAME",
-                fields.father_name
-            ],
-
-            [
-                "DATE OF BIRTH",
-                fields.dob
-            ]
-
-        ];
-    }
-
-
-    // =====================================================
-    // PASSPORT
-    // =====================================================
-
-    if (documentType === "passport") {
-
-        return [
-
-            [
-                "FULL NAME",
-                fields.name
-            ],
-
-            [
-                "PASSPORT NUMBER",
-                fields.passport_number
-            ],
-
-            [
-                "NATIONALITY",
-                fields.nationality
-            ],
-
-            [
-                "DATE OF BIRTH",
-                fields.date_of_birth
-            ],
-
-            [
-                "SEX",
-                fields.sex
-            ],
-
-            [
-                "DATE OF ISSUE",
-                fields.date_of_issue
-            ],
-
-            [
-                "DATE OF EXPIRY",
-                fields.date_of_expiry
-            ],
-
-            [
-                "PLACE OF BIRTH",
-                fields.place_of_birth
-            ],
-
-            [
-                "PLACE OF ISSUE",
-                fields.place_of_issue
-            ]
-
-        ];
-    }
-
-
-    // =====================================================
-    // DRIVING LICENCE
-    // =====================================================
-
-    if (documentType === "driving_license") {
-
-        return [
-
-            [
-                "FULL NAME",
-                fields.name
-            ],
-
-            [
-                "LICENCE NUMBER",
-                fields.licence_number ||
-                fields.license_number
-            ],
-
-            [
-                "DATE OF BIRTH",
-                fields.date_of_birth
-            ],
-
-            [
-                "ISSUE DATE",
-                fields.issue_date
-            ],
-
-            [
-                "EXPIRY DATE",
-                fields.expiry_date
-            ],
-
-            [
-                "BLOOD GROUP",
-                fields.blood_group
-            ],
-
-            [
-                "VEHICLE CLASSES",
-                Array.isArray(
-                    fields.vehicle_classes
-                )
-                    ? fields.vehicle_classes.join(", ")
-                    : fields.vehicle_classes
-            ],
-
-            [
-                "ADDRESS",
-                fields.address
-            ]
-
-        ];
-    }
-
-
-    // =====================================================
-    // VOTER ID
-    // =====================================================
-
-    if (documentType === "voter_id") {
-
-        return [
-
-            [
-                "FULL NAME",
-                fields.name
-            ],
-
-            [
-                "VOTER ID",
-                fields.voter_id ||
-                fields.epic_number
-            ],
-
-            [
-                "DATE OF BIRTH",
-                fields.dob ||
-                fields.date_of_birth
-            ],
-
-            [
-                "GENDER",
-                fields.gender
-            ],
-
-            [
-                "ADDRESS",
-                fields.address
-            ]
-
-        ];
-    }
-
-
-    // =====================================================
-    // FALLBACK
-    // =====================================================
-
-    return [
-
-        [
-            "DOCUMENT TYPE",
-            fields.document_type
-        ],
-
-        [
-            "FULL NAME",
-            fields.name
-        ]
-
-    ];
-}
-
-
-// =========================================================
-// SHOW RESULT
-// =========================================================
-
-function showResult(data) {
+    /* -----------------------------------------------------
+       RESULT DATA
+       ----------------------------------------------------- */
 
     const fields =
         data.fields || {};
 
+    const documentInfo =
+        data.document || {};
+
     const validation =
         data.validation || {};
 
-    const document =
-        data.document || {};
 
+    /* -----------------------------------------------------
+       DOCUMENT TYPE
+       ----------------------------------------------------- */
 
     const documentType =
-        data.document_type ||
-        fields.document_type ||
-        "unknown";
+        normalizeDocumentType(
+            data.document_type ||
+            documentInfo.document_type ||
+            "unknown"
+        );
 
+
+    /* -----------------------------------------------------
+       DOCUMENT DISPLAY NAME
+       ----------------------------------------------------- */
 
     const displayName =
-        document.display_name ||
-        formatDocumentType(
+        documentInfo.display_name ||
+        getDocumentDisplayName(
             documentType
         );
 
 
-    const valid =
-        Boolean(validation.valid);
+    /* -----------------------------------------------------
+       CONFIDENCE
+       ----------------------------------------------------- */
+
+    const confidence =
+        documentInfo.confidence;
 
 
-    // -----------------------------------------------------
-    // GET DOCUMENT-SPECIFIC FIELDS
-    // -----------------------------------------------------
+    /* -----------------------------------------------------
+       HEADER
+       ----------------------------------------------------- */
 
-    const rows =
-        getDocumentFields(
-            documentType,
-            fields
+    if (detectedDocumentElement) {
+
+        detectedDocumentElement.textContent =
+            displayName.toUpperCase();
+    }
+
+
+    if (detectionConfidenceElement) {
+
+        if (
+            typeof confidence === "number"
+        ) {
+
+            detectionConfidenceElement.textContent =
+                `${Math.round(confidence * 100)}%`;
+
+        } else {
+
+            detectionConfidenceElement.textContent =
+                "N/A";
+        }
+    }
+
+
+    /* -----------------------------------------------------
+       VALIDATION STATUS
+       ----------------------------------------------------- */
+
+    const isValid =
+        validation.valid === true;
+
+
+    if (resultStatus) {
+
+        resultStatus.classList.remove(
+            "valid",
+            "invalid"
         );
 
 
-    // -----------------------------------------------------
-    // CREATE HTML
-    // -----------------------------------------------------
-
-    const fieldsHTML = rows
-        .map(
-            ([label, value]) =>
-                createField(
-                    label,
-                    value
-                )
-        )
-        .join("");
+        resultStatus.classList.add(
+            isValid
+                ? "valid"
+                : "invalid"
+        );
 
 
-    // -----------------------------------------------------
-    // VALIDATION ERRORS
-    // -----------------------------------------------------
-
-    const errors =
-        Array.isArray(
-            validation.errors
-        )
-            ? validation.errors
-            : [];
+        resultStatus.textContent =
+            isValid
+                ? "VALIDATED"
+                : "REVIEW REQUIRED";
+    }
 
 
-    const errorHTML =
-        errors.length
-            ? `
-                <div class="result-errors">
+    /* -----------------------------------------------------
+       RESULT FIELDS
+       ----------------------------------------------------- */
 
-                    <strong>
-                        VALIDATION NOTES
-                    </strong>
-
-                    <br />
-
-                    ${errors
-                        .map(
-                            error =>
-                                escapeHtml(error)
-                        )
-                        .join("<br />")}
-
-                </div>
-            `
-            : "";
+    renderFields(
+        documentType,
+        fields
+    );
 
 
-    // -----------------------------------------------------
-    // CONFIDENCE
-    // -----------------------------------------------------
+    /* -----------------------------------------------------
+       VALIDATION ERRORS
+       ----------------------------------------------------- */
 
-    const confidence =
-        document.confidence != null
-            ? Math.round(
-                Number(
-                    document.confidence
-                ) * 100
-            )
-            : null;
+    renderValidationErrors(
+        validation
+    );
 
 
-    const confidenceHTML =
-        confidence !== null
-            ? `
-                <div class="result-confidence">
+    /* -----------------------------------------------------
+       SHOW RESULT
+       ----------------------------------------------------- */
 
-                    DETECTION CONFIDENCE
-
-                    <strong>
-                        ${confidence}%
-                    </strong>
-
-                </div>
-            `
-            : "";
-
-
-    // -----------------------------------------------------
-    // RESULT
-    // -----------------------------------------------------
-
-    result.innerHTML = `
-
-        <div class="result-header">
-
-            <div>
-
-                <span class="section-number">
-                    05 / RESULT
-                </span>
-
-                <h2>
-                    Verification
-                    <span class="serif">
-                        complete.
-                    </span>
-                </h2>
-
-            </div>
-
-
-            <span
-                class="result-status ${
-                    valid
-                        ? "valid"
-                        : "invalid"
-                }"
-            >
-                ${
-                    valid
-                        ? "VALIDATED"
-                        : "NEEDS REVIEW"
-                }
-            </span>
-
-        </div>
-
-
-        <div class="detected-document">
-
-            DETECTED DOCUMENT
-
-            <strong>
-                ${escapeHtml(
-                    displayName
-                )}
-            </strong>
-
-        </div>
-
-
-        <div class="result-grid">
-
-            <div class="result-field">
-
-                <label>
-                    DOCUMENT TYPE
-                </label>
-
-                <strong>
-                    ${escapeHtml(
-                        displayName
-                    )}
-                </strong>
-
-            </div>
-
-            ${fieldsHTML}
-
-        </div>
-
-
-        ${confidenceHTML}
-
-
-        ${errorHTML}
-
-    `;
-
-
-    result.classList.remove(
+    resultSection.classList.remove(
         "hidden"
     );
 
 
-    // -----------------------------------------------------
-    // SMOOTH SCROLL
-    // -----------------------------------------------------
+    /* -----------------------------------------------------
+       SCROLL TO RESULT
+       ----------------------------------------------------- */
 
     setTimeout(() => {
 
-        result.scrollIntoView({
+        resultSection.scrollIntoView({
             behavior: "smooth",
             block: "start"
         });
 
     }, 100);
-
 }
 
+/* =========================================================
+   NORMALIZE DOCUMENT TYPE
+   ========================================================= */
 
-// =========================================================
-// FORMAT DOCUMENT TYPE
-// =========================================================
+function normalizeDocumentType(type) {
 
-function formatDocumentType(
+    if (!type) {
+        return "unknown";
+    }
+
+    const normalized =
+        String(type)
+            .toLowerCase()
+            .trim();
+
+
+    if (
+        normalized === "driving licence" ||
+        normalized === "driving_license" ||
+        normalized === "driving-license" ||
+        normalized === "license"
+    ) {
+
+        return "driving_license";
+    }
+
+
+    if (
+        normalized === "voter id" ||
+        normalized === "voter_id" ||
+        normalized === "voter-id" ||
+        normalized === "epic"
+    ) {
+
+        return "voter_id";
+    }
+
+
+    if (
+        normalized === "aadhaar card" ||
+        normalized === "aadhaar_card"
+    ) {
+
+        return "aadhaar";
+    }
+
+
+    if (
+        normalized === "pan card" ||
+        normalized === "pan_card"
+    ) {
+
+        return "pan";
+    }
+
+
+    if (
+        normalized === "passport"
+    ) {
+
+        return "passport";
+    }
+
+
+    return normalized;
+}
+
+/* =========================================================
+   DOCUMENT DISPLAY NAME
+   ========================================================= */
+
+function getDocumentDisplayName(
     documentType
 ) {
 
@@ -855,127 +628,692 @@ function formatDocumentType(
         passport:
             "Passport",
 
-        driving_license:
-            "Driving Licence",
-
         voter_id:
             "Voter ID",
 
+        driving_license:
+            "Driving Licence",
+
         unknown:
             "Unknown Document"
-
     };
 
 
     return (
         names[documentType] ||
-        documentType
-            .replaceAll("_", " ")
-            .replace(
-                /\b\w/g,
-                letter =>
-                    letter.toUpperCase()
-            )
+        "Unknown Document"
     );
 }
 
+/* =========================================================
+   RENDER FIELDS
+   ========================================================= */
 
-// =========================================================
-// ERROR
-// =========================================================
-
-function showError(
-    message
+function renderFields(
+    documentType,
+    fields
 ) {
 
-    result.innerHTML = `
-
-        <div class="error-result">
-
-            <strong>
-                VERIFICATION ERROR
-            </strong>
-
-            <br />
-            <br />
-
-            ${escapeHtml(
-                message
-            )}
-
-        </div>
-
-    `;
+    if (!resultGrid) {
+        return;
+    }
 
 
-    result.classList.remove(
+    resultGrid.innerHTML = "";
+
+
+    /* -----------------------------------------------------
+       ALWAYS SHOW DOCUMENT TYPE
+       ----------------------------------------------------- */
+
+    addResultField(
+        "DOCUMENT TYPE",
+        getDocumentDisplayName(
+            documentType
+        )
+    );
+
+
+    /* =====================================================
+       AADHAAR
+       ===================================================== */
+
+    if (documentType === "aadhaar") {
+
+        addResultField(
+            "FULL NAME",
+            fields.name
+        );
+
+        addResultField(
+            "AADHAAR NUMBER",
+            fields.aadhaar_number
+        );
+
+        addResultField(
+            "DATE OF BIRTH",
+            fields.dob
+        );
+
+        addResultField(
+            "GENDER",
+            fields.gender
+        );
+
+        addResultField(
+            "PIN CODE",
+            fields.pin_code
+        );
+
+        addResultField(
+            "ADDRESS",
+            fields.address
+        );
+
+        return;
+    }
+
+
+    /* =====================================================
+       PAN
+       ===================================================== */
+
+    if (documentType === "pan") {
+
+        addResultField(
+            "FULL NAME",
+            fields.name
+        );
+
+        addResultField(
+            "PAN NUMBER",
+            fields.pan_number
+        );
+
+        addResultField(
+            "FATHER NAME",
+            fields.father_name
+        );
+
+        addResultField(
+            "DATE OF BIRTH",
+            fields.dob
+        );
+
+        return;
+    }
+
+
+    /* =====================================================
+       PASSPORT
+       ===================================================== */
+
+    if (documentType === "passport") {
+
+        addResultField(
+            "PASSPORT NUMBER",
+            fields.passport_number
+        );
+
+        addResultField(
+            "SURNAME",
+            fields.surname
+        );
+
+        addResultField(
+            "GIVEN NAME",
+            fields.given_name
+        );
+
+        addResultField(
+            "FULL NAME",
+            fields.name
+        );
+
+        addResultField(
+            "NATIONALITY",
+            fields.nationality
+        );
+
+        addResultField(
+            "DATE OF BIRTH",
+            fields.dob ||
+            fields.date_of_birth
+        );
+
+        addResultField(
+            "SEX",
+            fields.sex ||
+            fields.gender
+        );
+
+        addResultField(
+            "PLACE OF BIRTH",
+            fields.place_of_birth
+        );
+
+        addResultField(
+            "PLACE OF ISSUE",
+            fields.place_of_issue
+        );
+
+        addResultField(
+            "DATE OF ISSUE",
+            fields.date_of_issue
+        );
+
+        addResultField(
+            "DATE OF EXPIRY",
+            fields.date_of_expiry
+        );
+
+        return;
+    }
+
+
+    /* =====================================================
+       VOTER ID
+       ===================================================== */
+
+    if (documentType === "voter_id") {
+
+        addResultField(
+            "FULL NAME",
+            fields.name
+        );
+
+        addResultField(
+            "VOTER ID",
+            fields.voter_id ||
+            fields.epic_number
+        );
+
+        addResultField(
+            "DATE OF BIRTH",
+            fields.dob
+        );
+
+        addResultField(
+            "GENDER",
+            fields.gender ||
+            fields.sex
+        );
+
+        addResultField(
+            "ADDRESS",
+            fields.address
+        );
+
+        return;
+    }
+
+
+    /* =====================================================
+       DRIVING LICENCE
+       ===================================================== */
+
+    if (
+        documentType ===
+        "driving_license"
+    ) {
+
+        addResultField(
+            "FULL NAME",
+            fields.name
+        );
+
+        addResultField(
+            "LICENCE NUMBER",
+            fields.licence_number ||
+            fields.license_number
+        );
+
+        addResultField(
+            "DATE OF BIRTH",
+            fields.date_of_birth ||
+            fields.dob
+        );
+
+        addResultField(
+            "ISSUE DATE",
+            fields.issue_date ||
+            fields.date_of_issue
+        );
+
+        addResultField(
+            "EXPIRY DATE",
+            fields.expiry_date ||
+            fields.date_of_expiry
+        );
+
+        addResultField(
+            "BLOOD GROUP",
+            fields.blood_group
+        );
+
+        addResultField(
+            "VEHICLE CLASSES",
+            formatVehicleClasses(
+                fields.vehicle_classes
+            )
+        );
+
+        addResultField(
+            "ADDRESS",
+            fields.address
+        );
+
+        return;
+    }
+
+
+    /* =====================================================
+       UNKNOWN DOCUMENT
+       ===================================================== */
+
+    addResultField(
+        "DOCUMENT STATUS",
+        "Unsupported document type"
+    );
+
+
+    /* -----------------------------------------------------
+       GENERIC FALLBACK
+       ----------------------------------------------------- */
+
+    Object.entries(fields)
+        .forEach(([key, value]) => {
+
+            if (
+                key === "document_type" ||
+                value === null ||
+                value === undefined ||
+                value === ""
+            ) {
+                return;
+            }
+
+
+            const alreadyShown =
+                resultGrid.querySelector(
+                    `[data-field="${key}"]`
+                );
+
+
+            if (alreadyShown) {
+                return;
+            }
+
+
+            addResultField(
+                formatLabel(key),
+                formatValue(value),
+                key
+            );
+        });
+}
+
+/* =========================================================
+   ADD RESULT FIELD
+   ========================================================= */
+
+function addResultField(
+    label,
+    value,
+    fieldKey = ""
+) {
+
+    if (!resultGrid) {
+        return;
+    }
+
+
+    const field =
+        document.createElement("div");
+
+
+    field.className =
+        "result-field";
+
+
+    if (fieldKey) {
+
+        field.dataset.field =
+            fieldKey;
+    }
+
+
+    const labelElement =
+        document.createElement("label");
+
+
+    labelElement.textContent =
+        label;
+
+
+    const valueElement =
+        document.createElement("strong");
+
+
+    valueElement.textContent =
+        formatValue(value);
+
+
+    field.appendChild(
+        labelElement
+    );
+
+    field.appendChild(
+        valueElement
+    );
+
+
+    resultGrid.appendChild(
+        field
+    );
+}
+
+/* =========================================================
+   FORMAT VALUE
+   ========================================================= */
+
+function formatValue(value) {
+
+    if (
+        value === null ||
+        value === undefined ||
+        value === ""
+    ) {
+
+        return "NOT DETECTED";
+    }
+
+
+    if (Array.isArray(value)) {
+
+        if (value.length === 0) {
+            return "NOT DETECTED";
+        }
+
+        return value.join(", ");
+    }
+
+
+    if (
+        typeof value === "object"
+    ) {
+
+        try {
+
+            return JSON.stringify(
+                value
+            );
+
+        } catch {
+
+            return "NOT DETECTED";
+        }
+    }
+
+
+    return String(value);
+}
+
+/* =========================================================
+   FORMAT LABEL
+   ========================================================= */
+
+function formatLabel(
+    key
+) {
+
+    return String(key)
+        .replace(/_/g, " ")
+        .replace(
+            /\b\w/g,
+            character =>
+                character.toUpperCase()
+        );
+}
+
+/* =========================================================
+   FORMAT VEHICLE CLASSES
+   ========================================================= */
+
+function formatVehicleClasses(
+    classes
+) {
+
+    if (!classes) {
+        return "NOT DETECTED";
+    }
+
+
+    if (!Array.isArray(classes)) {
+
+        return String(classes);
+    }
+
+
+    if (classes.length === 0) {
+
+        return "NOT DETECTED";
+    }
+
+
+    return classes.join(", ");
+}
+
+/* =========================================================
+   VALIDATION ERRORS
+   ========================================================= */
+
+function renderValidationErrors(
+    validation
+) {
+
+    if (!resultErrors) {
+        return;
+    }
+
+
+    resultErrors.innerHTML = "";
+
+
+    const errors =
+        Array.isArray(
+            validation.errors
+        )
+            ? validation.errors
+            : [];
+
+
+    if (errors.length === 0) {
+
+        resultErrors.classList.add(
+            "hidden"
+        );
+
+        return;
+    }
+
+
+    resultErrors.classList.remove(
         "hidden"
     );
 
 
-    result.scrollIntoView({
-        behavior: "smooth",
-        block: "start"
+    const heading =
+        document.createElement("strong");
+
+
+    heading.textContent =
+        "VALIDATION NOTES";
+
+
+    resultErrors.appendChild(
+        heading
+    );
+
+
+    const list =
+        document.createElement("ul");
+
+
+    list.style.marginTop =
+        "12px";
+
+
+    errors.forEach(error => {
+
+        const item =
+            document.createElement("li");
+
+
+        item.textContent =
+            String(error);
+
+
+        list.appendChild(
+            item
+        );
     });
 
+
+    resultErrors.appendChild(
+        list
+    );
 }
 
+/* =========================================================
+   ERROR RESULT
+   ========================================================= */
 
-// =========================================================
-// HTML ESCAPING
-// =========================================================
-
-function escapeHtml(
-    value
+function renderErrorResult(
+    message
 ) {
 
-    return String(value)
-        .replace(
-            /[&<>'"]/g,
-            character => {
+    if (!resultSection) {
+        return;
+    }
 
-                const entities = {
 
-                    "&": "&amp;",
+    if (detectedDocumentElement) {
 
-                    "<": "&lt;",
+        detectedDocumentElement.textContent =
+            "PROCESSING ERROR";
+    }
 
-                    ">": "&gt;",
 
-                    "'": "&#39;",
+    if (detectionConfidenceElement) {
 
-                    '"': "&quot;"
+        detectionConfidenceElement.textContent =
+            "N/A";
+    }
 
-                };
 
-                return entities[
-                    character
-                ];
+    if (resultStatus) {
 
-            }
+        resultStatus.classList.remove(
+            "valid"
         );
 
+        resultStatus.classList.add(
+            "invalid"
+        );
+
+        resultStatus.textContent =
+            "ERROR";
+    }
+
+
+    if (resultGrid) {
+
+        resultGrid.innerHTML = "";
+
+        addResultField(
+            "STATUS",
+            "DOCUMENT COULD NOT BE PROCESSED"
+        );
+    }
+
+
+    if (resultErrors) {
+
+        resultErrors.classList.remove(
+            "hidden"
+        );
+
+
+        resultErrors.innerHTML = "";
+
+
+        const errorBox =
+            document.createElement("div");
+
+
+        errorBox.className =
+            "error-result";
+
+
+        errorBox.textContent =
+            message;
+
+
+        resultErrors.appendChild(
+            errorBox
+        );
+    }
+
+
+    resultSection.classList.remove(
+        "hidden"
+    );
+
+
+    setTimeout(() => {
+
+        resultSection.scrollIntoView({
+            behavior: "smooth",
+            block: "start"
+        });
+
+    }, 100);
 }
 
+/* =========================================================
+   START VERIFICATION LINK
+   ========================================================= */
 
-// =========================================================
-// KEYBOARD ACCESSIBILITY
-// =========================================================
+document
+    .querySelectorAll(
+        'a[href="#upload"]'
+    )
+    .forEach(link => {
 
-document.addEventListener(
-    "keydown",
-    event => {
+        link.addEventListener(
+            "click",
+            () => {
 
-        if (
-            event.key === "Enter" &&
-            document.activeElement ===
-                verifyButton &&
-            !verifyButton.disabled
-        ) {
+                setTimeout(() => {
 
-            verifyDocument();
+                    if (uploadPanel) {
 
-        }
+                        uploadPanel.scrollIntoView({
+                            behavior: "smooth",
+                            block: "center"
+                        });
+                    }
 
-    }
+                }, 100);
+            }
+        );
+    });
+
+/* =========================================================
+   SECURITY
+   ========================================================= */
+
+console.log(
+    "VERIFYAI frontend initialized."
 );
