@@ -1,44 +1,369 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>VerifyAI — Document Verification</title>
-    <link rel="stylesheet" href="styles.css" />
-  </head>
-  <body>
-    <main class="shell">
-      <header>
-        <a class="brand" href="/app"><span class="brand-mark">✓</span> VerifyAI</a>
-        <a class="docs-link" href="/docs" target="_blank" rel="noreferrer">API docs ↗</a>
-      </header>
-      <section class="hero">
-        <p class="eyebrow">Document intelligence</p>
-        <h1>Verify identity documents<br /><em>in one secure step.</em></h1>
-        <p class="lede">Upload an Aadhaar image or PDF. We enhance it, read the text, and return structured, validated fields.</p>
-      </section>
-      <section class="workspace">
-        <form id="upload-form" class="drop-zone">
-          <input id="file-input" type="file" accept=".jpg,.jpeg,.png,.pdf,image/jpeg,image/png,application/pdf" hidden />
-          <div class="upload-icon">↑</div>
-          <h2>Drop a document here</h2>
-          <p>JPG, PNG or PDF · Maximum 10 MB</p>
-          <button type="button" id="browse-button">Choose file</button>
-          <p id="file-name" class="file-name" aria-live="polite"></p>
-          <button id="verify-button" type="submit" class="verify" disabled>Verify document <span>→</span></button>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <meta
+    name="description"
+    content="VerifyAI — AI-powered identity document verification."
+  />
+
+  <title>VERIFYAI — Document Intelligence</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Playfair+Display:ital,wght@0,400;1,400&display=swap"
+    rel="stylesheet"
+  />
+
+  <link rel="stylesheet" href="styles.css" />
+</head>
+
+<body>
+
+  <!-- Page loader -->
+  <div class="page-loader" id="page-loader">
+    <div class="loader-logo">VERIFYAI</div>
+    <div class="loader-line"></div>
+  </div>
+
+  <!-- Navigation -->
+  <header class="site-header">
+
+    <a href="/app" class="logo">
+      VERIFY<span>AI</span>
+    </a>
+
+    <nav class="main-nav">
+      <a href="#verify">VERIFY</a>
+      <a href="#process">PROCESS</a>
+      <a href="#security">SECURITY</a>
+    </nav>
+
+    <a
+      href="/docs"
+      target="_blank"
+      rel="noreferrer"
+      class="api-link"
+    >
+      API <span>↗</span>
+    </a>
+
+  </header>
+
+
+  <main>
+
+    <!-- HERO -->
+    <section class="hero" id="verify">
+
+      <div class="hero-top">
+        <span class="section-number">01 / VERIFY</span>
+
+        <span class="hero-status">
+          <span class="status-dot"></span>
+          AI SYSTEM ONLINE
+        </span>
+      </div>
+
+      <div class="hero-title-wrapper">
+
+        <h1 class="hero-title">
+          DOCUMENT
+          <br />
+
+          <span class="serif">
+            intelligence.
+          </span>
+        </h1>
+
+        <div class="hero-description">
+          <p>
+            Transform identity documents into structured,
+            validated information using AI-powered OCR
+            and intelligent document processing.
+          </p>
+
+          <a href="#upload" class="scroll-link">
+            START VERIFICATION
+            <span>↓</span>
+          </a>
+        </div>
+
+      </div>
+
+      <div class="hero-bottom">
+
+        <div class="hero-line"></div>
+
+        <span>
+          FAST · PRIVATE · INTELLIGENT
+        </span>
+
+      </div>
+
+    </section>
+
+
+    <!-- UPLOAD SECTION -->
+    <section class="verification-section" id="upload">
+
+      <div class="section-heading">
+
+        <div>
+          <span class="section-number">02 / UPLOAD</span>
+
+          <h2>
+            Verify your
+            <span class="serif">document.</span>
+          </h2>
+        </div>
+
+        <p>
+          Upload a clear image or PDF.
+          Our AI will process, extract and
+          validate the information.
+        </p>
+
+      </div>
+
+
+      <div class="verification-grid">
+
+        <!-- Upload -->
+        <form id="upload-form" class="upload-panel">
+
+          <input
+            id="file-input"
+            type="file"
+            accept=".jpg,.jpeg,.png,.pdf,image/jpeg,image/png,application/pdf"
+            hidden
+          />
+
+          <div class="upload-content">
+
+            <div class="upload-index">
+              01
+            </div>
+
+            <div class="upload-symbol">
+              ↑
+            </div>
+
+            <h3>
+              DROP YOUR
+              <br />
+              DOCUMENT
+            </h3>
+
+            <p class="upload-subtitle">
+              JPG · PNG · PDF
+              <br />
+              MAXIMUM 10 MB
+            </p>
+
+            <button
+              type="button"
+              id="browse-button"
+              class="outline-button"
+            >
+              CHOOSE FILE
+            </button>
+
+            <p
+              id="file-name"
+              class="file-name"
+              aria-live="polite"
+            >
+              NO FILE SELECTED
+            </p>
+
+          </div>
+
+          <div class="upload-footer">
+
+            <span>
+              SECURE UPLOAD
+            </span>
+
+            <span>
+              AES PROCESSING
+            </span>
+
+          </div>
+
         </form>
-        <aside class="how-it-works">
-          <p class="eyebrow">How it works</p>
-          <ol>
-            <li><span>01</span> Upload a clear document</li>
-            <li><span>02</span> OCR extracts the text</li>
-            <li><span>03</span> Fields are validated</li>
-          </ol>
+
+
+        <!-- Process information -->
+        <aside class="process-panel" id="process">
+
+          <span class="section-number">
+            03 / PROCESS
+          </span>
+
+          <h3>
+            FROM IMAGE
+            <br />
+            <span class="serif">TO INSIGHT.</span>
+          </h3>
+
+          <div class="process-list">
+
+            <div class="process-item">
+
+              <span class="process-number">
+                01
+              </span>
+
+              <div>
+                <strong>
+                  DOCUMENT DETECTION
+                </strong>
+
+                <p>
+                  AI identifies the uploaded
+                  document type.
+                </p>
+              </div>
+
+            </div>
+
+
+            <div class="process-item">
+
+              <span class="process-number">
+                02
+              </span>
+
+              <div>
+                <strong>
+                  OCR EXTRACTION
+                </strong>
+
+                <p>
+                  Important information is
+                  extracted from the document.
+                </p>
+              </div>
+
+            </div>
+
+
+            <div class="process-item">
+
+              <span class="process-number">
+                03
+              </span>
+
+              <div>
+                <strong>
+                  VALIDATION
+                </strong>
+
+                <p>
+                  Extracted fields are checked
+                  for consistency and format.
+                </p>
+              </div>
+
+            </div>
+
+          </div>
+
         </aside>
-      </section>
-      <section id="result" class="result hidden" aria-live="polite"></section>
-      <p class="notice">Sensitive documents are processed only for this verification request. Do not upload documents you are not authorized to process.</p>
-    </main>
-    <script src="app.js"></script>
-  </body>
+
+      </div>
+
+
+      <!-- Verify button -->
+      <button
+        id="verify-button"
+        type="button"
+        class="verify-button"
+        disabled
+      >
+
+        <span class="verify-label">
+          VERIFY DOCUMENT
+        </span>
+
+        <span class="verify-arrow">
+          →
+        </span>
+
+      </button>
+
+    </section>
+
+
+    <!-- RESULT -->
+    <section
+      id="result"
+      class="result-section hidden"
+      aria-live="polite"
+    ></section>
+
+
+    <!-- SECURITY -->
+    <section class="security-section" id="security">
+
+      <div class="security-number">
+        04
+      </div>
+
+      <div class="security-content">
+
+        <span class="section-number">
+          SECURITY
+        </span>
+
+        <h2>
+          YOUR DATA.
+          <br />
+          <span class="serif">
+            YOUR CONTROL.
+          </span>
+        </h2>
+
+        <p>
+          Documents should only be processed when
+          you have authorization to use them.
+          VerifyAI is designed for document processing
+          and field validation — not as proof of official
+          document authenticity.
+        </p>
+
+      </div>
+
+    </section>
+
+  </main>
+
+
+  <!-- Footer -->
+  <footer class="site-footer">
+
+    <div class="footer-logo">
+      VERIFYAI
+    </div>
+
+    <div class="footer-center">
+      AI DOCUMENT VERIFICATION SYSTEM
+    </div>
+
+    <div class="footer-right">
+      <span>© 2026</span>
+      <span>BUILT WITH AI</span>
+    </div>
+
+  </footer>
+
+
+  <script src="app.js"></script>
+
+</body>
 </html>

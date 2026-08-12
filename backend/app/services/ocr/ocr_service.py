@@ -1,40 +1,121 @@
-"""OCR adapter.
-
-The model is loaded lazily so starting the API never downloads a model or spends
-memory until a document is actually uploaded.
-"""
+"""Fast OCR adapter for document verification."""
 
 from functools import lru_cache
 
 from fastapi import HTTPException
 
 
+# =========================================================
+# OCR MODEL
+# =========================================================
+
 @lru_cache(maxsize=1)
 def _get_model():
+
     try:
+
         from doctr.models import ocr_predictor
-        return ocr_predictor(pretrained=True)
-    except Exception as exc:  # model package, weights, or torch may be unavailable
+
+        print("[OCR] Loading DocTR model...")
+
+        model = ocr_predictor(
+            pretrained=True,
+            det_arch="db_resnet50",
+            reco_arch="crnn_vgg16_bn",
+            assume_straight_pages=True,
+            straighten_pages=False,
+            detect_language=False,
+        )
+
+        print("[OCR] DocTR model loaded.")
+
+        return model
+
+    except Exception as exc:
+
         raise RuntimeError(
-            "OCR is not available. Install the backend requirements and ensure the "
-            "DocTR model weights can be downloaded on the first request."
+            "OCR is not available. Install the backend "
+            "requirements and ensure the DocTR model "
+            "weights are available."
         ) from exc
 
 
-def extract_text(image_path: str) -> list[str]:
+# =========================================================
+# OCR EXTRACTION
+# =========================================================
+
+def extract_text(
+    image_path: str
+) -> list[str]:
+
     try:
+
         from doctr.io import DocumentFile
-        document = (
-            DocumentFile.from_pdf(image_path)
-            if image_path.lower().endswith(".pdf")
-            else DocumentFile.from_images(image_path)
+
+
+        # -------------------------------------------------
+        # Load document
+        # -------------------------------------------------
+
+        if image_path.lower().endswith(".pdf"):
+
+            document = DocumentFile.from_pdf(
+                image_path
+            )
+
+        else:
+
+            document = DocumentFile.from_images(
+                image_path
+            )
+
+
+        # -------------------------------------------------
+        # Get cached model
+        # -------------------------------------------------
+
+        model = _get_model()
+
+
+        # -------------------------------------------------
+        # Run OCR
+        # -------------------------------------------------
+
+        result = model(
+            document
         )
-        rendered_text = _get_model()(document).render()
-        return [line.strip() for line in rendered_text.splitlines() if line.strip()]
+
+
+        # -------------------------------------------------
+        # Extract text
+        # -------------------------------------------------
+
+        rendered_text = result.render()
+
+
+        return [
+            line.strip()
+            for line in rendered_text.splitlines()
+            if line.strip()
+        ]
+
+
     except HTTPException:
+
         raise
+
+
     except Exception as exc:
+
+        print(
+            f"[OCR ERROR] {exc}"
+        )
+
         raise HTTPException(
             status_code=503,
-            detail="OCR processing failed. Confirm that DocTR and its model weights are available.",
+            detail=(
+                "OCR processing failed. "
+                "Confirm that DocTR and its model "
+                "weights are available."
+            )
         ) from exc
