@@ -1,5 +1,6 @@
 from pathlib import Path
 from uuid import uuid4
+from datetime import datetime
 import re
 import shutil
 import time
@@ -8,15 +9,23 @@ from fastapi import HTTPException, UploadFile
 
 from app.services.image_service import preprocess_image
 from app.services.ocr.ocr_service import extract_text
-from app.services.extractor import extract_fields
+from app.services.document_classifier import classify_document
+
+from app.services.extractor.aadhaar_extractor import (
+    extract_aadhaar_fields,
+)
+
 from app.services.extractor.driving_license_extractor import (
     extract_driving_license_fields,
 )
+
+from app.services.extractor.passport_extractor import (
+    extract_passport_fields,
+)
+
 from app.services.extractor.voter_id_extractor import (
     extract_voter_id_fields,
 )
-from app.services.validator import validate_aadhaar
-from app.services.document_classifier import classify_document
 
 
 # =========================================================
@@ -24,7 +33,8 @@ from app.services.document_classifier import classify_document
 # =========================================================
 
 UPLOAD_FOLDER = (
-    Path(__file__).resolve().parents[2] / "uploads"
+    Path(__file__).resolve().parents[2]
+    / "uploads"
 )
 
 MAX_FILE_SIZE = 10 * 1024 * 1024
@@ -45,24 +55,21 @@ PAN_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-DOB_PATTERN = re.compile(
+DATE_PATTERN = re.compile(
     r"\b\d{2}[./-]\d{2}[./-]\d{4}\b"
 )
 
 
 # =========================================================
-# COMMON HELPERS
+# HELPERS
 # =========================================================
 
 def clean_line(text: str) -> str:
 
-    if not text:
-        return ""
-
     return re.sub(
         r"\s+",
         " ",
-        text,
+        str(text or ""),
     ).strip()
 
 
@@ -74,15 +81,12 @@ def clean_name(text: str):
     text = clean_line(text)
 
     text = re.sub(
-        r"[^A-Za-z.\s]",
+        r"[^A-Za-z.\s'-]",
         " ",
         text,
     )
 
     text = clean_line(text)
-
-    if not text:
-        return None
 
     words = text.split()
 
@@ -95,6 +99,37 @@ def clean_name(text: str):
     return text.upper()
 
 
+def parse_date(value: str):
+
+    if not value:
+        return None
+
+    value = value.replace(
+        ".",
+        "/",
+    ).replace(
+        "-",
+        "/",
+    )
+
+    for fmt in (
+        "%d/%m/%Y",
+        "%d/%m/%y",
+    ):
+
+        try:
+
+            return datetime.strptime(
+                value,
+                fmt,
+            )
+
+        except ValueError:
+            pass
+
+    return None
+
+
 # =========================================================
 # PAN EXTRACTION
 # =========================================================
@@ -104,53 +139,62 @@ def extract_pan_fields(
 ) -> dict:
 
     fields = {
+
+        "document_type": "pan",
+
         "pan_number": None,
+
         "name": None,
+
         "father_name": None,
+
         "dob": None,
     }
 
     lines = [
+
         clean_line(line)
+
         for line in ocr_text
+
         if line and line.strip()
     ]
 
     full_text = "\n".join(lines)
 
-    # -----------------------------------------------------
+    # ---------------------------------------------------------
     # PAN NUMBER
-    # -----------------------------------------------------
+    # ---------------------------------------------------------
 
-    pan_match = PAN_PATTERN.search(
+    match = PAN_PATTERN.search(
         full_text
     )
 
-    if pan_match:
+    if match:
 
         fields["pan_number"] = (
-            pan_match.group().upper()
+            match.group().upper()
         )
 
-    # -----------------------------------------------------
-    # DATE OF BIRTH
-    # -----------------------------------------------------
+    # ---------------------------------------------------------
+    # DOB
+    # ---------------------------------------------------------
 
-    for line in lines:
+    for index, line in enumerate(lines):
 
-        dob_match = DOB_PATTERN.search(
-            line
-        )
+        if DATE_PATTERN.search(line):
 
-        if dob_match:
-
-            fields["dob"] = dob_match.group()
+            fields["dob"] = (
+                DATE_PATTERN.search(
+                    line
+                ).group()
+            )
 
             break
 
-    # -----------------------------------------------------
+    # ---------------------------------------------------------
     # NAME
-    # -----------------------------------------------------
+    # ---------------------------------------------------------
 
     for index, line in enumerate(lines):
 
@@ -159,42 +203,42 @@ def extract_pan_fields(
         if "father" in normalized:
             continue
 
-        if re.search(
+        if not re.search(
             r"\bname\b",
             normalized,
         ):
+            continue
 
-            same_line = re.sub(
-                r"(?i).*?\bname\b\s*[:\-]?\s*",
-                "",
-                line,
-            ).strip()
+        value = re.sub(
+            r"(?i).*?\bname\b"
+            r"\s*[:\-]?\s*",
+            "",
+            line,
+        ).strip()
+
+        candidate = clean_name(
+            value
+        )
+
+        if candidate:
+
+            fields["name"] = candidate
+            break
+
+        if index + 1 < len(lines):
 
             candidate = clean_name(
-                same_line
+                lines[index + 1]
             )
 
             if candidate:
 
                 fields["name"] = candidate
-
                 break
 
-            if index + 1 < len(lines):
-
-                candidate = clean_name(
-                    lines[index + 1]
-                )
-
-                if candidate:
-
-                    fields["name"] = candidate
-
-                    break
-
-    # -----------------------------------------------------
+    # ---------------------------------------------------------
     # FATHER NAME
-    # -----------------------------------------------------
+    # ---------------------------------------------------------
 
     for index, line in enumerate(lines):
 
@@ -203,19 +247,22 @@ def extract_pan_fields(
         if "father" not in normalized:
             continue
 
-        same_line = re.sub(
-            r"(?i).*?father'?s?\s*name\s*[:\-]?\s*",
+        value = re.sub(
+            r"(?i).*?father'?s?\s*name"
+            r"\s*[:\-]?\s*",
             "",
             line,
         ).strip()
 
         candidate = clean_name(
-            same_line
+            value
         )
 
         if candidate:
 
-            fields["father_name"] = candidate
+            fields["father_name"] = (
+                candidate
+            )
 
             break
 
@@ -227,7 +274,9 @@ def extract_pan_fields(
 
             if candidate:
 
-                fields["father_name"] = candidate
+                fields["father_name"] = (
+                    candidate
+                )
 
                 break
 
@@ -235,122 +284,350 @@ def extract_pan_fields(
 
 
 # =========================================================
-# PAN VALIDATION
+# VALIDATION HELPERS
 # =========================================================
+
+def base_validation(
+    fields: dict,
+    document_confidence: float,
+) -> dict:
+
+    return {
+        "valid": False,
+        "errors": [],
+        "warnings": [],
+        "status": "failed",
+        "message": "",
+        "confidence": document_confidence,
+        "authenticity": "not_verified",
+        "checks": {},
+    }
+
 
 def validate_pan(
     fields: dict,
+    confidence: float,
 ) -> dict:
 
-    errors = []
+    result = base_validation(
+        fields,
+        confidence,
+    )
 
-    pan_number = fields.get(
+    errors = result["errors"]
+    checks = result["checks"]
+
+    pan = fields.get(
         "pan_number"
     )
 
-    if not pan_number:
+    checks["pan_format"] = bool(
+        pan
+        and PAN_PATTERN.fullmatch(
+            pan.upper()
+        )
+    )
+
+    if not checks["pan_format"]:
 
         errors.append(
-            "PAN number could not be detected."
+            "Invalid or missing PAN number."
         )
 
-    elif not PAN_PATTERN.fullmatch(
-        pan_number.upper()
-    ):
+    checks["name_present"] = bool(
+        fields.get("name")
+    )
 
-        errors.append(
-            "Invalid PAN number format."
-        )
-
-    if not fields.get("name"):
+    if not checks["name_present"]:
 
         errors.append(
             "Name could not be detected."
         )
 
-    if not fields.get("dob"):
+    checks["dob_present"] = bool(
+        fields.get("dob")
+    )
+
+    if not checks["dob_present"]:
 
         errors.append(
             "Date of birth could not be detected."
         )
 
-    return {
-        "valid": len(errors) == 0,
-        "errors": errors,
-        "status": (
-            "verified"
-            if not errors
-            else "failed"
-        ),
-        "message": (
-            "PAN information verified successfully."
-            if not errors
-            else "PAN verification requires review."
-        ),
-    }
+    result["valid"] = not errors
+
+    result["status"] = (
+        "verified"
+        if result["valid"]
+        else "failed"
+    )
+
+    result["message"] = (
+        "PAN fields passed structural validation."
+        if result["valid"]
+        else "PAN requires review."
+    )
+
+    return result
 
 
-# =========================================================
-# PASSPORT VALIDATION
-# =========================================================
+def validate_aadhaar_fields(
+    fields: dict,
+    confidence: float,
+) -> dict:
+
+    result = base_validation(
+        fields,
+        confidence,
+    )
+
+    errors = result["errors"]
+    checks = result["checks"]
+
+    number = fields.get(
+        "aadhaar_number"
+    )
+
+    normalized = re.sub(
+        r"\D",
+        "",
+        number or "",
+    )
+
+    checks["aadhaar_format"] = (
+        len(normalized) == 12
+        and normalized.isdigit()
+    )
+
+    if not checks["aadhaar_format"]:
+
+        errors.append(
+            "Invalid or missing Aadhaar number."
+        )
+
+    for field, message in (
+        (
+            "name",
+            "Name could not be detected.",
+        ),
+        (
+            "dob",
+            "Date of birth could not be detected.",
+        ),
+        (
+            "gender",
+            "Gender could not be detected.",
+        ),
+    ):
+
+        checks[
+            f"{field}_present"
+        ] = bool(
+            fields.get(field)
+        )
+
+        if not fields.get(field):
+
+            errors.append(message)
+
+    pin = fields.get(
+        "pin_code"
+    )
+
+    if pin:
+
+        checks["pin_format"] = bool(
+            re.fullmatch(
+                r"[1-9][0-9]{5}",
+                pin,
+            )
+        )
+
+        if not checks["pin_format"]:
+
+            errors.append(
+                "Invalid PIN code."
+            )
+
+    result["valid"] = not errors
+
+    result["status"] = (
+        "verified"
+        if result["valid"]
+        else "failed"
+    )
+
+    result["message"] = (
+        "Aadhaar fields passed structural validation."
+        if result["valid"]
+        else "Aadhaar requires review."
+    )
+
+    return result
+
 
 def validate_passport(
     fields: dict,
+    confidence: float,
 ) -> dict:
 
-    errors = []
+    result = base_validation(
+        fields,
+        confidence,
+    )
 
-    if not fields.get(
+    errors = result["errors"]
+    warnings = result["warnings"]
+    checks = result["checks"]
+
+    passport_number = fields.get(
         "passport_number"
-    ):
+    )
+
+    checks["passport_number_format"] = bool(
+        passport_number
+        and re.fullmatch(
+            r"[A-Z][0-9]{7}",
+            passport_number.upper(),
+        )
+    )
+
+    if not checks[
+        "passport_number_format"
+    ]:
 
         errors.append(
-            "Passport number could not be detected."
+            "Passport number could not be validated."
         )
 
-    return {
-        "valid": len(errors) == 0,
-        "errors": errors,
-        "status": (
-            "verified"
-            if not errors
-            else "failed"
-        ),
-        "message": (
-            "Passport information detected successfully."
-            if not errors
-            else "Passport verification requires review."
-        ),
-    }
+    dob = parse_date(
+        fields.get(
+            "date_of_birth"
+        )
+    )
 
+    issue = parse_date(
+        fields.get(
+            "date_of_issue"
+        )
+    )
 
-# =========================================================
-# VOTER ID VALIDATION
-# =========================================================
+    expiry = parse_date(
+        fields.get(
+            "date_of_expiry"
+        )
+    )
+
+    checks["dob_valid"] = (
+        dob is not None
+    )
+
+    checks["issue_date_valid"] = (
+        issue is not None
+    )
+
+    checks["expiry_date_valid"] = (
+        expiry is not None
+    )
+
+    if not dob:
+
+        warnings.append(
+            "Date of birth was not detected."
+        )
+
+    if not issue:
+
+        warnings.append(
+            "Date of issue was not detected."
+        )
+
+    if not expiry:
+
+        errors.append(
+            "Date of expiry was not detected."
+        )
+
+    if issue and expiry:
+
+        checks["date_order_valid"] = (
+            issue <= expiry
+        )
+
+        if issue > expiry:
+
+            errors.append(
+                "Passport issue date is after expiry date."
+            )
+
+    if expiry:
+
+        checks["expired"] = (
+            expiry < datetime.now()
+        )
+
+        if checks["expired"]:
+
+            warnings.append(
+                "Passport appears to be expired based on the extracted expiry date."
+            )
+
+    if not fields.get("name"):
+
+        warnings.append(
+            "Passport name could not be detected."
+        )
+
+    result["valid"] = not errors
+
+    result["status"] = (
+        "verified"
+        if result["valid"]
+        else "failed"
+    )
+
+    result["message"] = (
+        "Passport fields passed structural validation."
+        if result["valid"]
+        else "Passport requires review."
+    )
+
+    return result
+
 
 def validate_voter_id(
     fields: dict,
+    confidence: float,
 ) -> dict:
 
-    errors = []
-
-    voter_id = fields.get(
-        "voter_id"
+    result = base_validation(
+        fields,
+        confidence,
     )
 
-    if not voter_id:
+    errors = result["errors"]
 
-        errors.append(
-            "Voter ID / EPIC number could not be detected."
+    voter_id = (
+        fields.get("voter_id")
+        or fields.get("epic_number")
+    )
+
+    result["checks"][
+        "epic_format"
+    ] = bool(
+        voter_id
+        and re.fullmatch(
+            r"[A-Z]{3}[0-9]{7}",
+            voter_id.upper(),
         )
+    )
 
-    elif not re.fullmatch(
-        r"[A-Z]{3}[0-9]{7}",
-        voter_id.upper(),
-    ):
+    if not result["checks"][
+        "epic_format"
+    ]:
 
         errors.append(
-            "Invalid Voter ID / EPIC number format."
+            "Invalid or missing Voter ID / EPIC number."
         )
 
     if not fields.get("name"):
@@ -359,38 +636,41 @@ def validate_voter_id(
             "Voter name could not be detected."
         )
 
-    return {
-        "valid": len(errors) == 0,
-        "errors": errors,
-        "status": (
-            "verified"
-            if not errors
-            else "failed"
-        ),
-        "message": (
-            "Voter ID information verified successfully."
-            if not errors
-            else "Voter ID verification requires review."
-        ),
-    }
+    result["valid"] = not errors
 
+    result["status"] = (
+        "verified"
+        if result["valid"]
+        else "failed"
+    )
 
-# =========================================================
-# DRIVING LICENCE VALIDATION
-# =========================================================
+    result["message"] = (
+        "Voter ID fields passed structural validation."
+        if result["valid"]
+        else "Voter ID requires review."
+    )
+
+    return result
+
 
 def validate_driving_license(
     fields: dict,
+    confidence: float,
 ) -> dict:
 
-    errors = []
-
-    license_number = (
-        fields.get("license_number")
-        or fields.get("licence_number")
+    result = base_validation(
+        fields,
+        confidence,
     )
 
-    if not license_number:
+    errors = result["errors"]
+
+    number = (
+        fields.get("licence_number")
+        or fields.get("license_number")
+    )
+
+    if not number:
 
         errors.append(
             "Driving Licence number could not be detected."
@@ -402,41 +682,53 @@ def validate_driving_license(
             "Driving Licence name could not be detected."
         )
 
-    return {
-        "valid": len(errors) == 0,
-        "errors": errors,
-        "status": (
-            "verified"
-            if not errors
-            else "failed"
-        ),
-        "message": (
-            "Driving Licence information verified successfully."
-            if not errors
-            else "Driving Licence verification requires review."
-        ),
-    }
+    issue = parse_date(
+        fields.get("issue_date")
+    )
 
+    expiry = parse_date(
+        fields.get("expiry_date")
+    )
 
-# =========================================================
-# UNKNOWN VALIDATION
-# =========================================================
+    if issue and expiry:
 
-def validate_unknown(
-    fields: dict,
-) -> dict:
+        result["checks"][
+            "date_order_valid"
+        ] = issue <= expiry
 
-    return {
-        "valid": False,
-        "errors": [
-            "Unsupported document type."
-        ],
-        "status": "unsupported",
-        "message": (
-            "This document type is not currently "
-            "supported for verification."
-        ),
-    }
+        if issue > expiry:
+
+            errors.append(
+                "Driving Licence issue date is after expiry date."
+            )
+
+    if expiry:
+
+        result["checks"]["expired"] = (
+            expiry < datetime.now()
+        )
+
+        if result["checks"]["expired"]:
+
+            result["warnings"].append(
+                "Driving Licence appears to be expired."
+            )
+
+    result["valid"] = not errors
+
+    result["status"] = (
+        "verified"
+        if result["valid"]
+        else "failed"
+    )
+
+    result["message"] = (
+        "Driving Licence fields passed structural validation."
+        if result["valid"]
+        else "Driving Licence requires review."
+    )
+
+    return result
 
 
 # =========================================================
@@ -447,9 +739,9 @@ def verify_document_service(
     file: UploadFile,
 ):
 
-    # -----------------------------------------------------
+    # =====================================================
     # FILE VALIDATION
-    # -----------------------------------------------------
+    # =====================================================
 
     if file.content_type not in ALLOWED_TYPES:
 
@@ -467,9 +759,9 @@ def verify_document_service(
             detail="A filename is required.",
         )
 
-    # -----------------------------------------------------
+    # =====================================================
     # SAVE FILE
-    # -----------------------------------------------------
+    # =====================================================
 
     UPLOAD_FOLDER.mkdir(
         parents=True,
@@ -495,9 +787,9 @@ def verify_document_service(
             buffer,
         )
 
-    # -----------------------------------------------------
-    # FILE SIZE
-    # -----------------------------------------------------
+    # =====================================================
+    # SIZE CHECK
+    # =====================================================
 
     if (
         file_path.stat().st_size
@@ -523,48 +815,31 @@ def verify_document_service(
         # OCR
         # =================================================
 
+        start = time.perf_counter()
+
         if (
             file.content_type
-            != "application/pdf"
+            == "application/pdf"
         ):
 
-            start = time.perf_counter()
+            ocr_text = extract_text(
+                str(file_path)
+            )
+
+        else:
 
             processed_path = preprocess_image(
                 str(file_path)
             )
 
-            print(
-                "[PERFORMANCE] "
-                f"Preprocessing: "
-                f"{time.perf_counter() - start:.2f}s"
-            )
-
-            start = time.perf_counter()
-
             ocr_text = extract_text(
                 processed_path
             )
 
-            print(
-                "[PERFORMANCE] "
-                f"OCR: "
-                f"{time.perf_counter() - start:.2f}s"
-            )
-
-        else:
-
-            start = time.perf_counter()
-
-            ocr_text = extract_text(
-                str(file_path)
-            )
-
-            print(
-                "[PERFORMANCE] "
-                f"PDF OCR: "
-                f"{time.perf_counter() - start:.2f}s"
-            )
+        print(
+            "[PERFORMANCE] OCR: "
+            f"{time.perf_counter() - start:.2f}s"
+        )
 
         # =================================================
         # CLASSIFICATION
@@ -581,8 +856,7 @@ def verify_document_service(
         )
 
         print(
-            "[PERFORMANCE] "
-            f"Classification: "
+            "[PERFORMANCE] Classification: "
             f"{time.perf_counter() - start:.2f}s"
         )
 
@@ -596,252 +870,242 @@ def verify_document_service(
             "unknown",
         )
 
+        confidence = float(
+            document_info.get(
+                "confidence",
+                0.0,
+            )
+        )
+
         # =================================================
-        # DEFAULT FIELDS
+        # EXTRACTION
         # =================================================
 
         fields = {
             "document_type": document_type,
 
             "name": None,
+            "dob": None,
+            "date_of_birth": None,
+
+            "gender": None,
+            "sex": None,
+
+            "address": None,
+            "pin_code": None,
 
             "aadhaar_number": None,
 
-            "dob": None,
-
-            "gender": None,
-
-            "address": None,
-
-            "pin_code": None,
-
             "pan_number": None,
-
             "father_name": None,
 
             "passport_number": None,
-
+            "surname": None,
+            "given_names": None,
             "nationality": None,
-
             "place_of_birth": None,
-
+            "place_of_issue": None,
             "date_of_issue": None,
-
             "date_of_expiry": None,
 
             "voter_id": None,
-
             "epic_number": None,
 
-            "mother_name": None,
-
-            "husband_name": None,
-
             "license_number": None,
-
             "licence_number": None,
-
             "issue_date": None,
-
             "expiry_date": None,
-
             "blood_group": None,
-
             "vehicle_classes": [],
         }
 
-        # =================================================
+        start = time.perf_counter()
+
+        # -------------------------------------------------
         # AADHAAR
-        # =================================================
+        # -------------------------------------------------
 
         if document_type == "aadhaar":
 
-            start = time.perf_counter()
-
-            aadhaar_fields = extract_fields(
-                ocr_text
+            extracted = (
+                extract_aadhaar_fields(
+                    ocr_text
+                )
             )
 
             fields.update(
-                aadhaar_fields
+                extracted
             )
 
-            print(
-                "[PERFORMANCE] "
-                f"Aadhaar extraction: "
-                f"{time.perf_counter() - start:.2f}s"
+            validation = (
+                validate_aadhaar_fields(
+                    fields,
+                    confidence,
+                )
             )
 
-            validation = validate_aadhaar(
-                fields
-            )
-
-        # =================================================
+        # -------------------------------------------------
         # PAN
-        # =================================================
+        # -------------------------------------------------
 
         elif document_type == "pan":
 
-            start = time.perf_counter()
-
-            pan_fields = extract_pan_fields(
-                ocr_text
+            extracted = (
+                extract_pan_fields(
+                    ocr_text
+                )
             )
 
             fields.update(
-                pan_fields
-            )
-
-            print(
-                "[PERFORMANCE] "
-                f"PAN extraction: "
-                f"{time.perf_counter() - start:.2f}s"
-            )
-
-            print(
-                "[PAN FIELDS]",
-                pan_fields,
+                extracted
             )
 
             validation = validate_pan(
-                fields
+                fields,
+                confidence,
             )
 
-        # =================================================
+        # -------------------------------------------------
         # PASSPORT
-        # =================================================
+        # -------------------------------------------------
 
         elif document_type == "passport":
 
-            start = time.perf_counter()
-
-            passport_match = re.search(
-                r"\b[A-Z][0-9]{7}\b",
-                full_text,
-                re.IGNORECASE,
-            )
-
-            if passport_match:
-
-                fields[
-                    "passport_number"
-                ] = (
-                    passport_match
-                    .group()
-                    .upper()
+            extracted = (
+                extract_passport_fields(
+                    ocr_text
                 )
-
-            dates = re.findall(
-                r"\b\d{2}[/-]\d{2}[/-]\d{4}\b",
-                full_text,
             )
 
-            if len(dates) >= 1:
-
-                fields[
-                    "date_of_issue"
-                ] = dates[0]
-
-            if len(dates) >= 2:
-
-                fields[
-                    "date_of_expiry"
-                ] = dates[1]
-
-            print(
-                "[PERFORMANCE] "
-                f"Passport extraction: "
-                f"{time.perf_counter() - start:.2f}s"
+            fields.update(
+                extracted
             )
 
             validation = validate_passport(
-                fields
+                fields,
+                confidence,
             )
 
-        # =================================================
+        # -------------------------------------------------
         # VOTER ID
-        # =================================================
+        # -------------------------------------------------
 
         elif document_type == "voter_id":
 
-            start = time.perf_counter()
-
-            voter_fields = extract_voter_id_fields(
-                ocr_text
-            )
-
-            fields.update(
-                voter_fields
-            )
-
-            print(
-                "[PERFORMANCE] "
-                f"Voter ID extraction: "
-                f"{time.perf_counter() - start:.2f}s"
-            )
-
-            print(
-                "[VOTER ID FIELDS]",
-                voter_fields,
-            )
-
-            validation = validate_voter_id(
-                fields
-            )
-
-        # =================================================
-        # DRIVING LICENCE
-        # =================================================
-
-        elif document_type == "driving_license":
-
-            start = time.perf_counter()
-
-            driving_fields = (
-                extract_driving_license_fields(
-                    full_text
+            extracted = (
+                extract_voter_id_fields(
+                    ocr_text
                 )
             )
 
             fields.update(
-                driving_fields
+                extracted
             )
 
-            print(
-                "[PERFORMANCE] "
-                f"Driving Licence extraction: "
-                f"{time.perf_counter() - start:.2f}s"
+            validation = validate_voter_id(
+                fields,
+                confidence,
             )
 
-            print(
-                "[DRIVING LICENCE FIELDS]",
-                driving_fields,
+        # -------------------------------------------------
+        # DRIVING LICENCE
+        # -------------------------------------------------
+
+        elif document_type == "driving_license":
+
+            extracted = (
+                extract_driving_license_fields(
+                    ocr_text
+                )
             )
 
-            validation = validate_driving_license(
-                fields
+            fields.update(
+                extracted
             )
 
-        # =================================================
+            # Normalize spelling.
+            if (
+                extracted.get(
+                    "licence_number"
+                )
+            ):
+
+                fields[
+                    "license_number"
+                ] = extracted[
+                    "licence_number"
+                ]
+
+            if (
+                extracted.get(
+                    "license_number"
+                )
+            ):
+
+                fields[
+                    "licence_number"
+                ] = extracted[
+                    "license_number"
+                ]
+
+            validation = (
+                validate_driving_license(
+                    fields,
+                    confidence,
+                )
+            )
+
+        # -------------------------------------------------
         # UNKNOWN
-        # =================================================
+        # -------------------------------------------------
 
         else:
 
-            validation = validate_unknown(
-                fields
-            )
+            validation = {
 
-        # =================================================
-        # RESPONSE
-        # =================================================
+                "valid": False,
+
+                "errors": [
+                    "Unsupported document type."
+                ],
+
+                "warnings": [],
+
+                "status": "unsupported",
+
+                "message": (
+                    "This document type is not "
+                    "currently supported."
+                ),
+
+                "confidence": confidence,
+
+                "authenticity": "not_verified",
+
+                "checks": {},
+            }
 
         print(
-            "[PERFORMANCE] "
-            "Document verification completed."
+            "[PERFORMANCE] Extraction: "
+            f"{time.perf_counter() - start:.2f}s"
         )
 
+        print(
+            "[EXTRACTED FIELDS]",
+            fields,
+        )
+
+        print(
+            "[VALIDATION]",
+            validation,
+        )
+
+        # =================================================
+        # FINAL RESPONSE
+        # =================================================
+
         return {
+
             "filename": safe_name,
 
             "content_type": file.content_type,
@@ -867,16 +1131,9 @@ def verify_document_service(
             "validation": validation,
 
             "message": (
-                "Document processed successfully"
+                "Document processed successfully."
             ),
         }
-
-    except ValueError as exc:
-
-        raise HTTPException(
-            status_code=422,
-            detail=str(exc),
-        ) from exc
 
     except HTTPException:
 
@@ -885,8 +1142,8 @@ def verify_document_service(
     except Exception as exc:
 
         print(
-            "[ERROR] "
-            f"Document processing failed: {exc}"
+            "[ERROR] Document processing failed:",
+            repr(exc),
         )
 
         raise HTTPException(
