@@ -9,9 +9,19 @@ from fastapi import HTTPException, UploadFile
 from app.services.image_service import preprocess_image
 from app.services.ocr.ocr_service import extract_text
 from app.services.extractor import extract_fields
+from app.services.extractor.driving_license_extractor import (
+    extract_driving_license_fields,
+)
+from app.services.extractor.voter_id_extractor import (
+    extract_voter_id_fields,
+)
 from app.services.validator import validate_aadhaar
 from app.services.document_classifier import classify_document
 
+
+# =========================================================
+# CONFIGURATION
+# =========================================================
 
 UPLOAD_FOLDER = (
     Path(__file__).resolve().parents[2] / "uploads"
@@ -46,13 +56,14 @@ DOB_PATTERN = re.compile(
 
 def clean_line(text: str) -> str:
 
-    text = re.sub(
+    if not text:
+        return ""
+
+    return re.sub(
         r"\s+",
         " ",
         text,
     ).strip()
-
-    return text
 
 
 def clean_name(text: str):
@@ -62,7 +73,6 @@ def clean_name(text: str):
 
     text = clean_line(text)
 
-    # Remove common OCR punctuation.
     text = re.sub(
         r"[^A-Za-z.\s]",
         " ",
@@ -106,11 +116,11 @@ def extract_pan_fields(
         if line and line.strip()
     ]
 
+    full_text = "\n".join(lines)
+
     # -----------------------------------------------------
     # PAN NUMBER
     # -----------------------------------------------------
-
-    full_text = "\n".join(lines)
 
     pan_match = PAN_PATTERN.search(
         full_text
@@ -121,7 +131,6 @@ def extract_pan_fields(
         fields["pan_number"] = (
             pan_match.group().upper()
         )
-
 
     # -----------------------------------------------------
     # DATE OF BIRTH
@@ -135,46 +144,25 @@ def extract_pan_fields(
 
         if dob_match:
 
-            fields["dob"] = (
-                dob_match.group()
-            )
+            fields["dob"] = dob_match.group()
 
             break
 
-
     # -----------------------------------------------------
-    # FIND NAME USING PAN CARD LABEL
-    # -----------------------------------------------------
-    #
-    # Your OCR output is:
-    #
-    # [10] AT / - Name
-    # [11] BALIREDDY BHANU PRAKASH REDDY
-    #
-    # Therefore we should take the line immediately
-    # following the "Name" label.
+    # NAME
     # -----------------------------------------------------
 
     for index, line in enumerate(lines):
 
         normalized = line.lower()
 
-        # Ignore "Father's Name".
         if "father" in normalized:
-
             continue
-
-
-        # Match lines containing the PAN name label.
 
         if re.search(
             r"\bname\b",
             normalized,
         ):
-
-            # If the value is on the same line:
-            #
-            # Name: JOHN DOE
 
             same_line = re.sub(
                 r"(?i).*?\bname\b\s*[:\-]?\s*",
@@ -182,34 +170,21 @@ def extract_pan_fields(
                 line,
             ).strip()
 
-
             candidate = clean_name(
                 same_line
             )
 
-
             if candidate:
 
-                # Avoid accidentally using only the label.
-                if candidate.lower() != "name":
+                fields["name"] = candidate
 
-                    fields["name"] = candidate
-
-                    break
-
-
-            # Otherwise use the next OCR line.
+                break
 
             if index + 1 < len(lines):
 
-                next_line = lines[
-                    index + 1
-                ]
-
                 candidate = clean_name(
-                    next_line
+                    lines[index + 1]
                 )
-
 
                 if candidate:
 
@@ -217,22 +192,16 @@ def extract_pan_fields(
 
                     break
 
-
     # -----------------------------------------------------
-    # FIND FATHER NAME
+    # FATHER NAME
     # -----------------------------------------------------
 
     for index, line in enumerate(lines):
 
         normalized = line.lower()
 
-
         if "father" not in normalized:
-
             continue
-
-
-        # Same-line extraction.
 
         same_line = re.sub(
             r"(?i).*?father'?s?\s*name\s*[:\-]?\s*",
@@ -240,11 +209,9 @@ def extract_pan_fields(
             line,
         ).strip()
 
-
         candidate = clean_name(
             same_line
         )
-
 
         if candidate:
 
@@ -252,132 +219,17 @@ def extract_pan_fields(
 
             break
 
-
-        # Next-line extraction.
-
         if index + 1 < len(lines):
 
             candidate = clean_name(
                 lines[index + 1]
             )
 
-
             if candidate:
 
                 fields["father_name"] = candidate
 
                 break
-
-
-    # -----------------------------------------------------
-    # FALLBACK NAME DETECTION
-    # -----------------------------------------------------
-    #
-    # Only used if the explicit "Name" label was not
-    # detected.
-    #
-    # We deliberately DO NOT use the line near the DOB
-    # because PAN cards can contain signatures or other
-    # OCR text there.
-    # -----------------------------------------------------
-
-    if not fields["name"]:
-
-        candidates = []
-
-        for index, line in enumerate(lines):
-
-            candidate = clean_name(
-                line
-            )
-
-            if not candidate:
-
-                continue
-
-
-            upper = candidate.upper()
-
-
-            rejected = [
-
-                "INCOME TAX",
-
-                "GOVT OF INDIA",
-
-                "GOVERNMENT OF INDIA",
-
-                "PERMANENT ACCOUNT",
-
-                "ACCOUNT NUMBER",
-
-                "PERMANENT ACCOUNT NUMBER",
-
-                "FATHER NAME",
-
-                "FATHERS NAME",
-
-                "FATHER'S NAME",
-
-                "DATE OF BIRTH",
-
-                "SIGNATURE",
-
-                "CARD",
-
-                "DEPARTMENT",
-
-            ]
-
-
-            if any(
-                word in upper
-                for word in rejected
-            ):
-
-                continue
-
-
-            # Never treat a PAN number as a name.
-
-            if PAN_PATTERN.fullmatch(
-                upper.replace(" ", "")
-            ):
-
-                continue
-
-
-            # Don't use the line after DOB.
-            if (
-                index > 0
-                and DOB_PATTERN.search(
-                    lines[index - 1]
-                )
-            ):
-
-                continue
-
-
-            candidates.append(
-                (index, candidate)
-            )
-
-
-        if candidates:
-
-            # Prefer longer realistic names.
-            candidates.sort(
-                key=lambda item: (
-                    len(item[1].split()),
-                    len(item[1]),
-                ),
-                reverse=True,
-            )
-
-            fields["name"] = (
-                candidates[0][1]
-            )
-
 
     return fields
 
@@ -396,7 +248,6 @@ def validate_pan(
         "pan_number"
     )
 
-
     if not pan_number:
 
         errors.append(
@@ -411,13 +262,11 @@ def validate_pan(
             "Invalid PAN number format."
         )
 
-
     if not fields.get("name"):
 
         errors.append(
             "Name could not be detected."
         )
-
 
     if not fields.get("dob"):
 
@@ -425,19 +274,14 @@ def validate_pan(
             "Date of birth could not be detected."
         )
 
-
     return {
-
         "valid": len(errors) == 0,
-
         "errors": errors,
-
         "status": (
             "verified"
             if not errors
             else "failed"
         ),
-
         "message": (
             "PAN information verified successfully."
             if not errors
@@ -464,19 +308,14 @@ def validate_passport(
             "Passport number could not be detected."
         )
 
-
     return {
-
         "valid": len(errors) == 0,
-
         "errors": errors,
-
         "status": (
             "verified"
             if not errors
             else "failed"
         ),
-
         "message": (
             "Passport information detected successfully."
             if not errors
@@ -495,29 +334,41 @@ def validate_voter_id(
 
     errors = []
 
-    if not fields.get(
+    voter_id = fields.get(
         "voter_id"
+    )
+
+    if not voter_id:
+
+        errors.append(
+            "Voter ID / EPIC number could not be detected."
+        )
+
+    elif not re.fullmatch(
+        r"[A-Z]{3}[0-9]{7}",
+        voter_id.upper(),
     ):
 
         errors.append(
-            "Voter ID could not be detected."
+            "Invalid Voter ID / EPIC number format."
         )
 
+    if not fields.get("name"):
+
+        errors.append(
+            "Voter name could not be detected."
+        )
 
     return {
-
         "valid": len(errors) == 0,
-
         "errors": errors,
-
         "status": (
             "verified"
             if not errors
             else "failed"
         ),
-
         "message": (
-            "Voter ID information detected successfully."
+            "Voter ID information verified successfully."
             if not errors
             else "Voter ID verification requires review."
         ),
@@ -534,29 +385,33 @@ def validate_driving_license(
 
     errors = []
 
-    if not fields.get(
-        "license_number"
-    ):
+    license_number = (
+        fields.get("license_number")
+        or fields.get("licence_number")
+    )
+
+    if not license_number:
 
         errors.append(
             "Driving Licence number could not be detected."
         )
 
+    if not fields.get("name"):
+
+        errors.append(
+            "Driving Licence name could not be detected."
+        )
 
     return {
-
         "valid": len(errors) == 0,
-
         "errors": errors,
-
         "status": (
             "verified"
             if not errors
             else "failed"
         ),
-
         "message": (
-            "Driving Licence information detected successfully."
+            "Driving Licence information verified successfully."
             if not errors
             else "Driving Licence verification requires review."
         ),
@@ -572,15 +427,11 @@ def validate_unknown(
 ) -> dict:
 
     return {
-
         "valid": False,
-
         "errors": [
             "Unsupported document type."
         ],
-
         "status": "unsupported",
-
         "message": (
             "This document type is not currently "
             "supported for verification."
@@ -609,14 +460,12 @@ def verify_document_service(
             ),
         )
 
-
     if not file.filename:
 
         raise HTTPException(
             status_code=400,
             detail="A filename is required.",
         )
-
 
     # -----------------------------------------------------
     # SAVE FILE
@@ -627,17 +476,14 @@ def verify_document_service(
         exist_ok=True,
     )
 
-
     safe_name = Path(
         file.filename
     ).name
-
 
     file_path = (
         UPLOAD_FOLDER
         / f"{uuid4().hex}_{safe_name}"
     )
-
 
     with open(
         file_path,
@@ -648,7 +494,6 @@ def verify_document_service(
             file.file,
             buffer,
         )
-
 
     # -----------------------------------------------------
     # FILE SIZE
@@ -670,9 +515,7 @@ def verify_document_service(
             ),
         )
 
-
     processed_path = None
-
 
     try:
 
@@ -697,7 +540,6 @@ def verify_document_service(
                 f"{time.perf_counter() - start:.2f}s"
             )
 
-
             start = time.perf_counter()
 
             ocr_text = extract_text(
@@ -709,7 +551,6 @@ def verify_document_service(
                 f"OCR: "
                 f"{time.perf_counter() - start:.2f}s"
             )
-
 
         else:
 
@@ -725,7 +566,6 @@ def verify_document_service(
                 f"{time.perf_counter() - start:.2f}s"
             )
 
-
         # =================================================
         # CLASSIFICATION
         # =================================================
@@ -733,7 +573,6 @@ def verify_document_service(
         full_text = "\n".join(
             ocr_text
         )
-
 
         start = time.perf_counter()
 
@@ -747,25 +586,21 @@ def verify_document_service(
             f"{time.perf_counter() - start:.2f}s"
         )
 
-
         print(
             "[CLASSIFIER RESULT]",
             document_info,
         )
-
 
         document_type = document_info.get(
             "document_type",
             "unknown",
         )
 
-
         # =================================================
-        # DEFAULT RESPONSE FIELDS
+        # DEFAULT FIELDS
         # =================================================
 
         fields = {
-
             "document_type": document_type,
 
             "name": None,
@@ -798,11 +633,22 @@ def verify_document_service(
 
             "epic_number": None,
 
+            "mother_name": None,
+
+            "husband_name": None,
+
             "license_number": None,
 
             "licence_number": None,
-        }
 
+            "issue_date": None,
+
+            "expiry_date": None,
+
+            "blood_group": None,
+
+            "vehicle_classes": [],
+        }
 
         # =================================================
         # AADHAAR
@@ -820,18 +666,15 @@ def verify_document_service(
                 aadhaar_fields
             )
 
-
             print(
                 "[PERFORMANCE] "
                 f"Aadhaar extraction: "
                 f"{time.perf_counter() - start:.2f}s"
             )
 
-
             validation = validate_aadhaar(
                 fields
             )
-
 
         # =================================================
         # PAN
@@ -849,24 +692,20 @@ def verify_document_service(
                 pan_fields
             )
 
-
             print(
                 "[PERFORMANCE] "
                 f"PAN extraction: "
                 f"{time.perf_counter() - start:.2f}s"
             )
 
-
             print(
                 "[PAN FIELDS]",
                 pan_fields,
             )
 
-
             validation = validate_pan(
                 fields
             )
-
 
         # =================================================
         # PASSPORT
@@ -882,7 +721,6 @@ def verify_document_service(
                 re.IGNORECASE,
             )
 
-
             if passport_match:
 
                 fields[
@@ -893,12 +731,10 @@ def verify_document_service(
                     .upper()
                 )
 
-
             dates = re.findall(
                 r"\b\d{2}[/-]\d{2}[/-]\d{4}\b",
                 full_text,
             )
-
 
             if len(dates) >= 1:
 
@@ -906,13 +742,11 @@ def verify_document_service(
                     "date_of_issue"
                 ] = dates[0]
 
-
             if len(dates) >= 2:
 
                 fields[
                     "date_of_expiry"
                 ] = dates[1]
-
 
             print(
                 "[PERFORMANCE] "
@@ -920,11 +754,9 @@ def verify_document_service(
                 f"{time.perf_counter() - start:.2f}s"
             )
 
-
             validation = validate_passport(
                 fields
             )
-
 
         # =================================================
         # VOTER ID
@@ -934,27 +766,13 @@ def verify_document_service(
 
             start = time.perf_counter()
 
-            epic_match = re.search(
-                r"\b[A-Z]{3}[0-9]{7}\b",
-                full_text,
-                re.IGNORECASE,
+            voter_fields = extract_voter_id_fields(
+                ocr_text
             )
 
-
-            if epic_match:
-
-                fields["voter_id"] = (
-                    epic_match
-                    .group()
-                    .upper()
-                )
-
-                fields["epic_number"] = (
-                    epic_match
-                    .group()
-                    .upper()
-                )
-
+            fields.update(
+                voter_fields
+            )
 
             print(
                 "[PERFORMANCE] "
@@ -962,11 +780,14 @@ def verify_document_service(
                 f"{time.perf_counter() - start:.2f}s"
             )
 
+            print(
+                "[VOTER ID FIELDS]",
+                voter_fields,
+            )
 
             validation = validate_voter_id(
                 fields
             )
-
 
         # =================================================
         # DRIVING LICENCE
@@ -976,49 +797,15 @@ def verify_document_service(
 
             start = time.perf_counter()
 
-            patterns = [
-
-                r"(?:dl\s*no|dl\s*number)"
-                r"\s*[:\-]?\s*([A-Z0-9\-\/]+)",
-
-                r"(?:licence\s*no|license\s*no)"
-                r"\s*[:\-]?\s*([A-Z0-9\-\/]+)",
-
-                r"(?:driving\s*licence\s*no)"
-                r"\s*[:\-]?\s*([A-Z0-9\-\/]+)",
-            ]
-
-
-            for pattern in patterns:
-
-                match = re.search(
-                    pattern,
-                    full_text,
-                    re.IGNORECASE,
+            driving_fields = (
+                extract_driving_license_fields(
+                    full_text
                 )
+            )
 
-
-                if match:
-
-                    number = (
-                        match
-                        .group(1)
-                        .upper()
-                    )
-
-
-                    fields[
-                        "license_number"
-                    ] = number
-
-
-                    fields[
-                        "licence_number"
-                    ] = number
-
-
-                    break
-
+            fields.update(
+                driving_fields
+            )
 
             print(
                 "[PERFORMANCE] "
@@ -1026,11 +813,14 @@ def verify_document_service(
                 f"{time.perf_counter() - start:.2f}s"
             )
 
+            print(
+                "[DRIVING LICENCE FIELDS]",
+                driving_fields,
+            )
 
             validation = validate_driving_license(
                 fields
             )
-
 
         # =================================================
         # UNKNOWN
@@ -1042,7 +832,6 @@ def verify_document_service(
                 fields
             )
 
-
         # =================================================
         # RESPONSE
         # =================================================
@@ -1052,9 +841,7 @@ def verify_document_service(
             "Document verification completed."
         )
 
-
         return {
-
             "filename": safe_name,
 
             "content_type": file.content_type,
@@ -1084,7 +871,6 @@ def verify_document_service(
             ),
         }
 
-
     except ValueError as exc:
 
         raise HTTPException(
@@ -1092,11 +878,9 @@ def verify_document_service(
             detail=str(exc),
         ) from exc
 
-
     except HTTPException:
 
         raise
-
 
     except Exception as exc:
 
