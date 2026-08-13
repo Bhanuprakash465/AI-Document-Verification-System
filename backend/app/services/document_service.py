@@ -65,7 +65,6 @@ DATE_PATTERN = re.compile(
 # =========================================================
 
 def clean_line(text: str) -> str:
-
     return re.sub(
         r"\s+",
         " ",
@@ -223,6 +222,7 @@ def extract_pan_fields(
         if candidate:
 
             fields["name"] = candidate
+
             break
 
         if index + 1 < len(lines):
@@ -234,6 +234,7 @@ def extract_pan_fields(
             if candidate:
 
                 fields["name"] = candidate
+
                 break
 
     # ---------------------------------------------------------
@@ -293,13 +294,21 @@ def base_validation(
 ) -> dict:
 
     return {
+
         "valid": False,
+
         "errors": [],
+
         "warnings": [],
+
         "status": "failed",
+
         "message": "",
+
         "confidence": document_confidence,
+
         "authenticity": "not_verified",
+
         "checks": {},
     }
 
@@ -315,6 +324,7 @@ def validate_pan(
     )
 
     errors = result["errors"]
+
     checks = result["checks"]
 
     pan = fields.get(
@@ -382,6 +392,7 @@ def validate_aadhaar_fields(
     )
 
     errors = result["errors"]
+
     checks = result["checks"]
 
     number = fields.get(
@@ -477,7 +488,9 @@ def validate_passport(
     )
 
     errors = result["errors"]
+
     warnings = result["warnings"]
+
     checks = result["checks"]
 
     passport_number = fields.get(
@@ -882,6 +895,7 @@ def verify_document_service(
         # =================================================
 
         fields = {
+
             "document_type": document_type,
 
             "name": None,
@@ -971,15 +985,41 @@ def verify_document_service(
 
         elif document_type == "passport":
 
-            extracted = (
-                extract_passport_fields(
-                    ocr_text
-                )
+            extracted = extract_passport_fields(
+                ocr_text
             )
 
             fields.update(
                 extracted
             )
+
+            # -------------------------------------------------
+            # Passport field aliases
+            # -------------------------------------------------
+
+            if (
+                extracted.get("given_names")
+                and not extracted.get("given_name")
+            ):
+                fields["given_name"] = (
+                    extracted["given_names"]
+                )
+
+            if (
+                extracted.get("date_of_birth")
+                and not extracted.get("dob")
+            ):
+                fields["dob"] = (
+                    extracted["date_of_birth"]
+                )
+
+            if (
+                extracted.get("sex")
+                and not extracted.get("gender")
+            ):
+                fields["gender"] = (
+                    extracted["sex"]
+                )
 
             validation = validate_passport(
                 fields,
@@ -1024,6 +1064,7 @@ def verify_document_service(
             )
 
             # Normalize spelling.
+
             if (
                 extracted.get(
                     "licence_number"

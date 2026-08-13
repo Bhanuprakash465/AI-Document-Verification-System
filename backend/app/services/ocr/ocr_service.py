@@ -1,7 +1,13 @@
-"""OCR service for VerifyAI."""
+"""
+OCR service for VerifyAI.
+
+Runs docTR OCR and performs lightweight normalization
+without destroying the original recognized text.
+"""
 
 from functools import lru_cache
 from pathlib import Path
+import re
 
 from fastapi import HTTPException
 
@@ -27,10 +33,111 @@ def _get_model():
     except Exception as exc:
 
         raise RuntimeError(
-            "OCR is not available. Install the backend "
-            "requirements and ensure DocTR model weights "
+            "OCR is not available. "
+            "Install the backend requirements "
+            "and ensure DocTR model weights "
             "are available."
         ) from exc
+
+
+def _clean_ocr_line(
+    text: str,
+) -> str:
+
+    text = str(
+        text or ""
+    ).strip()
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text,
+    )
+
+    return text
+
+
+def _is_useful_line(
+    text: str,
+) -> bool:
+
+    if not text:
+        return False
+
+    # Ignore extremely tiny OCR fragments.
+    if len(text.strip()) < 2:
+        return False
+
+    return True
+
+
+def _extract_page_lines(
+    page,
+) -> list[str]:
+
+    lines = []
+
+    for block in page.blocks:
+
+        for line in block.lines:
+
+            words = []
+
+            for word in line.words:
+
+                value = getattr(
+                    word,
+                    "value",
+                    str(word),
+                )
+
+                value = _clean_ocr_line(
+                    value
+                )
+
+                if value:
+                    words.append(value)
+
+            if not words:
+                continue
+
+            text = _clean_ocr_line(
+                " ".join(words)
+            )
+
+            if _is_useful_line(text):
+                lines.append(text)
+
+    return lines
+
+
+def _deduplicate_lines(
+    lines: list[str],
+) -> list[str]:
+
+    result = []
+
+    seen = set()
+
+    for line in lines:
+
+        normalized = re.sub(
+            r"\s+",
+            " ",
+            line.lower(),
+        ).strip()
+
+        if not normalized:
+            continue
+
+        if normalized in seen:
+            continue
+
+        seen.add(normalized)
+
+        result.append(line)
+
+    return result
 
 
 def extract_text(
@@ -41,13 +148,13 @@ def extract_text(
 
         from doctr.io import DocumentFile
 
+        path = Path(
+            image_path
+        )
 
-        path = Path(image_path)
-
-
-        # =================================================
-        # LOAD DOCUMENT
-        # =================================================
+        # =====================================================
+        # LOAD
+        # =====================================================
 
         if path.suffix.lower() == ".pdf":
 
@@ -61,103 +168,97 @@ def extract_text(
                 str(path)
             )
 
-
-        # =================================================
+        # =====================================================
         # OCR
-        # =================================================
+        # =====================================================
 
         model = _get_model()
 
-        result = model(document)
+        result = model(
+            document
+        )
 
-
-        # =================================================
-        # EXTRACT OCR TEXT
-        # =================================================
+        # =====================================================
+        # EXTRACT STRUCTURED LINES
+        # =====================================================
 
         lines = []
 
+        for page_index, page in enumerate(
+            result.pages
+        ):
 
-        for page in result.pages:
+            page_lines = _extract_page_lines(
+                page
+            )
 
-            for block in page.blocks:
+            print(
+                f"[OCR] Page {page_index + 1}: "
+                f"{len(page_lines)} lines"
+            )
 
-                for line in block.lines:
+            lines.extend(
+                page_lines
+            )
 
-                    words = []
+        lines = _deduplicate_lines(
+            lines
+        )
 
-                    for word in line.words:
-
-                        value = (
-                            word.value
-                            if hasattr(word, "value")
-                            else str(word)
-                        )
-
-                        value = value.strip()
-
-                        if value:
-
-                            words.append(value)
-
-
-                    if words:
-
-                        text = " ".join(words).strip()
-
-                        if text:
-
-                            lines.append(text)
-
-
-        # =================================================
+        # =====================================================
         # FALLBACK
-        # =================================================
+        # =====================================================
 
         if not lines:
 
             rendered = result.render()
 
             lines = [
-                line.strip()
+                _clean_ocr_line(line)
                 for line in rendered.splitlines()
-                if line.strip()
+                if _is_useful_line(
+                    _clean_ocr_line(line)
+                )
             ]
 
+            lines = _deduplicate_lines(
+                lines
+            )
 
-        # =================================================
+        # =====================================================
         # DEBUG
-        # =================================================
+        # =====================================================
 
-        print("[OCR] Extracted lines:")
+        print(
+            "[OCR] Extracted lines:"
+        )
 
-        for index, line in enumerate(lines):
+        for index, line in enumerate(
+            lines
+        ):
 
             print(
                 f"[OCR {index}] {line}"
             )
 
-
         return lines
-
 
     except HTTPException:
 
         raise
 
-
     except Exception as exc:
 
         print(
             "[OCR ERROR]",
-            str(exc)
+            repr(exc),
         )
 
         raise HTTPException(
             status_code=503,
             detail=(
                 "OCR processing failed. "
-                "Confirm that DocTR and its model "
-                "weights are available."
+                "Confirm that DocTR and its "
+                "model weights are available."
             ),
         ) from exc

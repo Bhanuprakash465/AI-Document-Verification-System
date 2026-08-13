@@ -1,19 +1,11 @@
 """
-Indian Passport OCR extractor.
+Robust Indian passport extractor.
 
-Handles:
-- Passport number
-- Surname
-- Given names
-- Full name
-- Nationality
-- Date of birth
-- Sex
-- Place of birth
-- Place of issue
-- Date of issue
-- Date of expiry
-- MRZ passport number fallback
+Uses:
+1. ICAO-style MRZ parsing as the primary source.
+2. OCR label/value parsing as a secondary source.
+3. OCR-tolerant labels.
+4. Date ordering as a fallback for issue/expiry dates.
 """
 
 import re
@@ -21,17 +13,16 @@ from datetime import datetime
 from typing import Optional
 
 
+DATE_PATTERN = re.compile(
+    r"\b\d{2}[./-]\d{2}[./-]\d{4}\b"
+)
+
+MRZ_CHARS = re.compile(
+    r"^[A-Z0-9<]{30,44}$"
+)
+
 PASSPORT_NUMBER_PATTERN = re.compile(
     r"\b[A-Z][0-9]{7}\b",
-    re.IGNORECASE,
-)
-
-DATE_PATTERN = re.compile(
-    r"\b\d{2}[/-]\d{2}[/-]\d{4}\b"
-)
-
-MRZ_PATTERN = re.compile(
-    r"[A-Z0-9<]{30,44}",
     re.IGNORECASE,
 )
 
@@ -44,11 +35,22 @@ def clean_line(text: str) -> str:
     return re.sub(
         r"\s+",
         " ",
-        text,
+        str(text),
     ).strip()
 
 
-def clean_name(text: str) -> Optional[str]:
+def compact(text: str) -> str:
+
+    return re.sub(
+        r"\s+",
+        "",
+        str(text or "").upper(),
+    )
+
+
+def clean_name(
+    text: Optional[str],
+) -> Optional[str]:
 
     if not text:
         return None
@@ -68,104 +70,95 @@ def clean_name(text: str) -> Optional[str]:
 
     words = text.split()
 
-    if len(words) < 1:
-        return None
-
     if len(words) > 8:
         return None
 
     return text.upper()
 
 
-def _next_value(
-    lines: list[str],
-    index: int,
+def normalize_date(
+    value: Optional[str],
 ) -> Optional[str]:
 
-    if index + 1 >= len(lines):
+    if not value:
         return None
 
-    value = clean_line(
-        lines[index + 1]
+    match = DATE_PATTERN.search(
+        value
     )
 
-    return value or None
+    if not match:
+        return None
+
+    value = match.group()
+
+    value = value.replace(
+        ".",
+        "/",
+    ).replace(
+        "-",
+        "/",
+    )
+
+    return value
 
 
-def _extract_date_from_label(
-    lines: list[str],
-    keywords: tuple[str, ...],
+def mrz_date(
+    value: str,
 ) -> Optional[str]:
 
-    for index, line in enumerate(lines):
+    if not re.fullmatch(
+        r"\d{6}",
+        value or "",
+    ):
+        return None
 
-        normalized = line.lower()
+    try:
 
-        if not any(
-            keyword in normalized
-            for keyword in keywords
-        ):
-            continue
-
-        # Date on same line.
-        match = DATE_PATTERN.search(line)
-
-        if match:
-            return match.group()
-
-        # Date on following OCR line.
-        if index + 1 < len(lines):
-
-            match = DATE_PATTERN.search(
-                lines[index + 1]
-            )
-
-            if match:
-                return match.group()
-
-    return None
-
-
-def _extract_label_value(
-    lines: list[str],
-    keywords: tuple[str, ...],
-) -> Optional[str]:
-
-    for index, line in enumerate(lines):
-
-        normalized = line.lower()
-
-        matched_keyword = None
-
-        for keyword in keywords:
-
-            if keyword in normalized:
-
-                matched_keyword = keyword
-                break
-
-        if not matched_keyword:
-            continue
-
-        value = re.sub(
-            rf"(?i).*?{re.escape(matched_keyword)}"
-            r"\s*[:\-]?\s*",
-            "",
-            line,
-        ).strip()
-
-        if value:
-            return clean_line(value)
-
-        value = _next_value(
-            lines,
-            index,
+        dt = datetime.strptime(
+            value,
+            "%y%m%d",
         )
 
-        if value:
-            return value
+        return dt.strftime(
+            "%d/%m/%Y"
+        )
 
-    return None
+    except ValueError:
+
+        return None
+
+
+def _mrz_candidates(
+    lines: list[str],
+) -> list[str]:
+
+    candidates = []
+
+    for line in lines:
+
+        value = compact(line)
+
+        # Normal MRZ.
+        if (
+            MRZ_CHARS.fullmatch(value)
+            and "<" in value
+        ):
+            candidates.append(value)
+            continue
+
+        # OCR may insert/remove a few spaces.
+        if (
+            len(value) >= 30
+            and "<" in value
+            and sum(
+                c.isalnum() or c == "<"
+                for c in value
+            ) >= 28
+        ):
+            candidates.append(value)
+
+    return candidates
 
 
 def _extract_mrz(
@@ -180,61 +173,56 @@ def _extract_mrz(
         "date_of_birth": None,
         "sex": None,
         "date_of_expiry": None,
+        "mrz_line_1": None,
+        "mrz_line_2": None,
     }
 
-    mrz_lines = []
+    candidates = _mrz_candidates(
+        lines
+    )
 
-    for line in lines:
-
-        compact = re.sub(
-            r"\s+",
-            "",
-            line.upper(),
-        )
-
-        if (
-            "<" in compact
-            and len(compact) >= 30
-        ):
-            mrz_lines.append(compact)
-
-    if len(mrz_lines) < 2:
+    if len(candidates) < 2:
         return result
 
-    # Passport MRZ normally has:
+    # Prefer the final two MRZ-looking lines.
+    line1 = candidates[-2]
+    line2 = candidates[-1]
+
+    result["mrz_line_1"] = line1
+    result["mrz_line_2"] = line2
+
+    # =====================================================
+    # LINE 2
+    # ICAO TD3:
     #
-    # P<INDSURNAME<<GIVEN<NAMES<<<<<<<<
-    #
-    # XXXXXXXX<0INDYYMMDDMYYMMDD...
+    # 0-8   passport number
+    # 9     check digit
+    # 10-12 nationality
+    # 13-18 DOB
+    # 19    check digit
+    # 20    sex
+    # 21-26 expiry
+    # 27    check digit
+    # =====================================================
 
-    line1 = mrz_lines[-2]
-    line2 = mrz_lines[-1]
+    if len(line2) >= 27:
 
-    # ---------------------------------------------------------
-    # Passport number
-    # ---------------------------------------------------------
+        passport_number = line2[0:9]
 
-    if len(line2) >= 9:
-
-        candidate = line2[:9]
-
-        candidate = candidate.replace(
-            "<",
-            "",
+        passport_number = (
+            passport_number
+            .replace("<", "")
         )
 
+        # OCR sometimes reads O as 0 or vice versa.
         if re.fullmatch(
             r"[A-Z][0-9]{7}",
-            candidate,
+            passport_number,
         ):
 
-            result["passport_number"] = candidate
-
-    # ---------------------------------------------------------
-    # Nationality
-    # ---------------------------------------------------------
-
-    if len(line2) >= 13:
+            result[
+                "passport_number"
+            ] = passport_number
 
         nationality = line2[10:13]
 
@@ -243,30 +231,20 @@ def _extract_mrz(
             nationality,
         ):
 
-            result["nationality"] = nationality
+            result[
+                "nationality"
+            ] = nationality
 
-    # ---------------------------------------------------------
-    # DOB
-    # ---------------------------------------------------------
+        dob_raw = line2[13:19]
 
-    if len(line2) >= 20:
+        dob = mrz_date(
+            dob_raw
+        )
 
-        raw_dob = line2[13:19]
-
-        if re.fullmatch(
-            r"\d{6}",
-            raw_dob,
-        ):
-
-            result["date_of_birth"] = (
-                _mrz_date(raw_dob)
-            )
-
-    # ---------------------------------------------------------
-    # Sex
-    # ---------------------------------------------------------
-
-    if len(line2) >= 21:
+        if dob:
+            result[
+                "date_of_birth"
+            ] = dob
 
         sex = line2[20]
 
@@ -276,30 +254,43 @@ def _extract_mrz(
         elif sex == "F":
             result["sex"] = "FEMALE"
 
-    # ---------------------------------------------------------
-    # Expiry
-    # ---------------------------------------------------------
+        elif sex == "<":
+            result["sex"] = None
 
-    if len(line2) >= 27:
+        expiry_raw = line2[21:27]
 
-        raw_expiry = line2[21:27]
+        expiry = mrz_date(
+            expiry_raw
+        )
 
-        if re.fullmatch(
-            r"\d{6}",
-            raw_expiry,
-        ):
+        if expiry:
+            result[
+                "date_of_expiry"
+            ] = expiry
 
-            result["date_of_expiry"] = (
-                _mrz_date(raw_expiry)
+    # =====================================================
+    # LINE 1 NAME
+    #
+    # P<IND<SURNAME<<GIVEN<NAMES
+    #
+    # OCR can produce:
+    #
+    # P<<SURNAME<<GIVEN<NAMES
+    # =====================================================
+
+    if line1.startswith("P"):
+
+        name_section = line1[2:]
+
+        # Remove issuing-country area if present.
+        if (
+            len(name_section) >= 3
+            and re.fullmatch(
+                r"[A-Z]{3}",
+                name_section[:3],
             )
-
-    # ---------------------------------------------------------
-    # Name
-    # ---------------------------------------------------------
-
-    if line1.startswith("P<"):
-
-        name_section = line1[5:]
+        ):
+            name_section = name_section[3:]
 
         parts = name_section.split(
             "<<",
@@ -330,28 +321,160 @@ def _extract_mrz(
                 result["surname"] = surname
 
             if given:
-                result["given_names"] = given
+                result[
+                    "given_names"
+                ] = given
 
     return result
 
 
-def _mrz_date(value: str) -> str:
+def _find_value_after_label(
+    lines: list[str],
+    labels: tuple[str, ...],
+) -> Optional[str]:
 
-    """
-    Convert YYMMDD to DD/MM/YYYY.
+    for index, line in enumerate(lines):
 
-    Passport MRZ dates use two-digit years.
-    """
+        normalized = (
+            line.lower()
+            .replace(":", " ")
+            .replace("-", " ")
+        )
+
+        for label in labels:
+
+            if label in normalized:
+
+                remainder = re.sub(
+                    rf"(?i).*?{re.escape(label)}",
+                    "",
+                    line,
+                )
+
+                remainder = clean_line(
+                    remainder
+                )
+
+                if remainder:
+                    return remainder
+
+                # Search next two lines because
+                # OCR often separates label/value.
+                for offset in (
+                    1,
+                    2,
+                ):
+
+                    next_index = (
+                        index + offset
+                    )
+
+                    if (
+                        next_index
+                        >= len(lines)
+                    ):
+                        continue
+
+                    value = clean_line(
+                        lines[next_index]
+                    )
+
+                    if value:
+                        return value
+
+    return None
+
+
+def _find_date_after_label(
+    lines: list[str],
+    labels: tuple[str, ...],
+) -> Optional[str]:
+
+    for index, line in enumerate(lines):
+
+        normalized = (
+            line.lower()
+        )
+
+        if not any(
+            label in normalized
+            for label in labels
+        ):
+            continue
+
+        # Same line.
+        match = DATE_PATTERN.search(
+            line
+        )
+
+        if match:
+            return normalize_date(
+                match.group()
+            )
+
+        # Next 3 OCR lines.
+        for offset in (
+            1,
+            2,
+            3,
+        ):
+
+            next_index = (
+                index + offset
+            )
+
+            if (
+                next_index
+                >= len(lines)
+            ):
+                continue
+
+            match = DATE_PATTERN.search(
+                lines[next_index]
+            )
+
+            if match:
+                return normalize_date(
+                    match.group()
+                )
+
+    return None
+
+
+def _all_dates(
+    lines: list[str],
+) -> list[str]:
+
+    dates = []
+
+    for line in lines:
+
+        for match in DATE_PATTERN.finditer(
+            line
+        ):
+
+            value = normalize_date(
+                match.group()
+            )
+
+            if value and value not in dates:
+                dates.append(value)
+
+    return dates
+
+
+def _parse_date(
+    value: Optional[str],
+) -> Optional[datetime]:
+
+    if not value:
+        return None
 
     try:
 
-        date = datetime.strptime(
+        return datetime.strptime(
             value,
-            "%y%m%d",
-        )
-
-        return date.strftime(
-            "%d/%m/%Y"
+            "%d/%m/%Y",
         )
 
     except ValueError:
@@ -359,12 +482,78 @@ def _mrz_date(value: str) -> str:
         return None
 
 
+def _infer_issue_expiry(
+    fields: dict,
+    lines: list[str],
+) -> None:
+
+    dates = _all_dates(
+        lines
+    )
+
+    if not dates:
+        return
+
+    # If explicit extraction already found
+    # both values, do nothing.
+    if (
+        fields.get("date_of_issue")
+        and fields.get("date_of_expiry")
+    ):
+        return
+
+    parsed = []
+
+    for date in dates:
+
+        dt = _parse_date(
+            date
+        )
+
+        if dt:
+            parsed.append(
+                (
+                    date,
+                    dt,
+                )
+            )
+
+    if not parsed:
+        return
+
+    parsed.sort(
+        key=lambda item: item[1]
+    )
+
+    # Passport visible page normally contains
+    # DOB, issue date and expiry date.
+    #
+    # If OCR loses the issue/expiry labels but
+    # two later dates are available, use chronology.
+    if len(parsed) >= 2:
+
+        if not fields.get(
+            "date_of_issue"
+        ):
+
+            fields[
+                "date_of_issue"
+            ] = parsed[-2][0]
+
+        if not fields.get(
+            "date_of_expiry"
+        ):
+
+            fields[
+                "date_of_expiry"
+            ] = parsed[-1][0]
+
+
 def extract_passport_fields(
     ocr_text: list[str],
 ) -> dict:
 
     fields = {
-
         "document_type": "passport",
 
         "passport_number": None,
@@ -374,6 +563,8 @@ def extract_passport_fields(
         "surname": None,
 
         "given_names": None,
+
+        "given_name": None,
 
         "nationality": None,
 
@@ -395,21 +586,17 @@ def extract_passport_fields(
     }
 
     lines = [
-
         clean_line(line)
-
         for line in ocr_text
-
         if line and line.strip()
-
     ]
 
     if not lines:
         return fields
 
-    # =========================================================
-    # MRZ
-    # =========================================================
+    # =====================================================
+    # MRZ FIRST
+    # =====================================================
 
     mrz = _extract_mrz(
         lines
@@ -420,185 +607,257 @@ def extract_passport_fields(
         if value:
             fields[key] = value
 
-    # =========================================================
+    # =====================================================
     # PASSPORT NUMBER FALLBACK
-    # =========================================================
+    # =====================================================
 
-    if not fields["passport_number"]:
+    if not fields[
+        "passport_number"
+    ]:
 
         match = PASSPORT_NUMBER_PATTERN.search(
             "\n".join(lines)
         )
 
         if match:
+            fields[
+                "passport_number"
+            ] = match.group().upper()
 
-            fields["passport_number"] = (
-                match.group().upper()
-            )
+    # =====================================================
+    # DOB
+    # =====================================================
 
-    # =========================================================
-    # DATE OF BIRTH
-    # =========================================================
-
-    visible_dob = _extract_date_from_label(
+    visible_dob = _find_date_after_label(
         lines,
         (
             "date of birth",
-            "date of birth",
+            "dateofbirth",
             "dob",
+            "birth",
         ),
     )
 
     if visible_dob:
+        fields[
+            "date_of_birth"
+        ] = visible_dob
 
-        fields["date_of_birth"] = visible_dob
+    # MRZ is more reliable than noisy visible OCR.
+    if mrz.get("date_of_birth"):
+        fields[
+            "date_of_birth"
+        ] = mrz[
+            "date_of_birth"
+        ]
 
-    if fields["date_of_birth"]:
+    fields["dob"] = (
+        fields["date_of_birth"]
+    )
 
-        fields["dob"] = (
-            fields["date_of_birth"]
-        )
+    # =====================================================
+    # ISSUE DATE
+    # =====================================================
 
-    # =========================================================
-    # DATE OF ISSUE
-    # =========================================================
-
-    visible_issue = _extract_date_from_label(
+    issue_date = _find_date_after_label(
         lines,
         (
             "date of issue",
+            "dateofissue",
             "issue date",
+            "date issued",
         ),
     )
 
-    if visible_issue:
+    if issue_date:
+        fields[
+            "date_of_issue"
+        ] = issue_date
 
-        fields["date_of_issue"] = (
-            visible_issue
-        )
+    # =====================================================
+    # EXPIRY
+    # =====================================================
 
-    # =========================================================
-    # DATE OF EXPIRY
-    # =========================================================
-
-    visible_expiry = _extract_date_from_label(
+    expiry_date = _find_date_after_label(
         lines,
         (
             "date of expiry",
+            "dateofexpiry",
             "expiry date",
             "date of expiration",
+            "expiration date",
         ),
     )
 
-    if visible_expiry:
+    if expiry_date:
+        fields[
+            "date_of_expiry"
+        ] = expiry_date
 
-        fields["date_of_expiry"] = (
-            visible_expiry
-        )
+    # MRZ expiry wins.
+    if mrz.get(
+        "date_of_expiry"
+    ):
+        fields[
+            "date_of_expiry"
+        ] = mrz[
+            "date_of_expiry"
+        ]
 
-    # =========================================================
-    # NATIONALITY
-    # =========================================================
+    # =====================================================
+    # DATE FALLBACK
+    # =====================================================
 
-    nationality = _extract_label_value(
+    _infer_issue_expiry(
+        fields,
         lines,
-        (
-            "nationality",
-        ),
     )
 
-    if nationality:
+    # =====================================================
+    # NATIONALITY
+    # =====================================================
 
-        nationality = re.sub(
-            r"[^A-Za-z]",
-            "",
-            nationality,
+    if mrz.get("nationality"):
+
+        fields[
+            "nationality"
+        ] = mrz[
+            "nationality"
+        ]
+
+    else:
+
+        nationality = (
+            _find_value_after_label(
+                lines,
+                (
+                    "nationality",
+                ),
+            )
         )
 
         if nationality:
 
-            fields["nationality"] = (
-                nationality.upper()
+            nationality = re.sub(
+                r"[^A-Za-z]",
+                "",
+                nationality,
             )
 
-    # =========================================================
+            if nationality:
+                fields[
+                    "nationality"
+                ] = nationality.upper()
+
+    # =====================================================
     # SEX
-    # =========================================================
+    # =====================================================
 
-    sex = _extract_label_value(
-        lines,
-        (
-            "sex",
-            "gender",
-        ),
-    )
+    if mrz.get("sex"):
 
-    if sex:
+        fields["sex"] = mrz["sex"]
 
-        normalized = sex.upper()
+    else:
 
-        if normalized in {
-            "M",
-            "MALE",
-        }:
+        sex = _find_value_after_label(
+            lines,
+            (
+                "sex",
+                "gender",
+            ),
+        )
 
-            fields["sex"] = "MALE"
+        if sex:
 
-        elif normalized in {
-            "F",
-            "FEMALE",
-        }:
+            value = sex.upper()
 
-            fields["sex"] = "FEMALE"
+            if value.startswith(
+                "M"
+            ):
+                fields["sex"] = "MALE"
 
-    # =========================================================
+            elif value.startswith(
+                "F"
+            ):
+                fields["sex"] = "FEMALE"
+
+    fields["gender"] = fields[
+        "sex"
+    ]
+
+    # =====================================================
     # SURNAME
-    # =========================================================
+    # =====================================================
 
-    surname = _extract_label_value(
-        lines,
-        (
-            "surname",
-        ),
-    )
+    if mrz.get("surname"):
 
-    if surname:
+        fields["surname"] = mrz[
+            "surname"
+        ]
 
-        surname = clean_name(
-            surname
+    else:
+
+        surname = (
+            _find_value_after_label(
+                lines,
+                (
+                    "surname",
+                    "sumame",
+                    "surnam",
+                ),
+            )
         )
 
         if surname:
 
-            fields["surname"] = surname
-
-    # =========================================================
-    # GIVEN NAME
-    # =========================================================
-
-    given_names = _extract_label_value(
-        lines,
-        (
-            "given name",
-            "given names",
-        ),
-    )
-
-    if given_names:
-
-        given_names = clean_name(
-            given_names
-        )
-
-        if given_names:
-
-            fields["given_names"] = (
-                given_names
+            fields[
+                "surname"
+            ] = clean_name(
+                surname
             )
 
-    # =========================================================
-    # COMBINED NAME
-    # =========================================================
+    # =====================================================
+    # GIVEN NAME
+    # =====================================================
+
+    if mrz.get("given_names"):
+
+        fields[
+            "given_names"
+        ] = mrz[
+            "given_names"
+        ]
+
+    else:
+
+        given = (
+            _find_value_after_label(
+                lines,
+                (
+                    "given name",
+                    "given names",
+                    "givennames",
+                ),
+            )
+        )
+
+        if given:
+
+            fields[
+                "given_names"
+            ] = clean_name(
+                given
+            )
+
+    fields[
+        "given_name"
+    ] = fields[
+        "given_names"
+    ]
+
+    # =====================================================
+    # FULL NAME
+    # =====================================================
 
     if (
         fields["given_names"]
@@ -622,93 +881,53 @@ def extract_passport_fields(
             fields["surname"]
         )
 
-    # =========================================================
-    # GENERIC NAME FALLBACK
-    # =========================================================
-
-    if not fields["name"]:
-
-        for index, line in enumerate(lines):
-
-            normalized = line.lower()
-
-            if "name" not in normalized:
-                continue
-
-            if (
-                "surname" in normalized
-                or "given" in normalized
-            ):
-                continue
-
-            value = re.sub(
-                r"(?i).*?\bname\b"
-                r"\s*[:\-]?\s*",
-                "",
-                line,
-            ).strip()
-
-            candidate = clean_name(
-                value
-            )
-
-            if candidate:
-
-                fields["name"] = candidate
-                break
-
-            if index + 1 < len(lines):
-
-                candidate = clean_name(
-                    lines[index + 1]
-                )
-
-                if candidate:
-
-                    fields["name"] = (
-                        candidate
-                    )
-
-                    break
-
-    # =========================================================
+    # =====================================================
     # PLACE OF BIRTH
-    # =========================================================
+    # =====================================================
 
-    place_of_birth = _extract_label_value(
+    place = _find_value_after_label(
         lines,
         (
             "place of birth",
+            "placeofbirth",
         ),
     )
 
-    if place_of_birth:
+    if place:
 
-        fields["place_of_birth"] = (
-            place_of_birth.upper()
-        )
+        fields[
+            "place_of_birth"
+        ] = clean_line(
+            place
+        ).upper()
 
-    # =========================================================
+    # =====================================================
     # PLACE OF ISSUE
-    # =========================================================
+    # =====================================================
 
-    place_of_issue = _extract_label_value(
+    place = _find_value_after_label(
         lines,
         (
             "place of issue",
+            "placeofissue",
         ),
     )
 
-    if place_of_issue:
+    if place:
 
-        fields["place_of_issue"] = (
-            place_of_issue.upper()
-        )
-
-    # =========================================================
-    # NORMALIZE GENDER ALIAS
-    # =========================================================
-
-    fields["gender"] = fields["sex"]
+        fields[
+            "place_of_issue"
+        ] = clean_line(
+            place
+        ).upper()
 
     return fields
+
+
+def extract_fields(
+    ocr_text: list[str],
+) -> dict:
+
+    return extract_passport_fields(
+        ocr_text
+    )

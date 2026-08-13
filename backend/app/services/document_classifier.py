@@ -1,234 +1,338 @@
 """
-Document classifier for VerifyAI.
+Robust document classifier for VerifyAI.
 
-Detects supported Indian identity and government documents
-from OCR-extracted text.
+Classification is based on weighted document-specific signals.
+Generic phrases such as "Government of India" are intentionally
+given very low weight because they occur on multiple documents.
 """
 
 import re
 
 
 DOCUMENT_PATTERNS = {
+    "passport": {
+        "display_name": "Passport",
+        "strong": [
+            r"\bpassport\b",
+            r"\bpassport\s*no\b",
+            r"\bpassport\s*number\b",
+            r"\bdate\s+of\s+expiry\b",
+            r"\bplace\s+of\s+issue\b",
+            r"\brepublic\s+of\s+india\b",
+        ],
+        "medium": [
+            r"\bdate\s+of\s+issue\b",
+            r"\bplace\s+of\s+birth\b",
+            r"\bnationality\b",
+            r"\btype\s*/?\s*p\b",
+        ],
+        "mrz": True,
+    },
+
     "aadhaar": {
         "display_name": "Aadhaar Card",
-        "patterns": [
+        "strong": [
             r"\baadhaar\b",
+            r"\baadhaar\s+number\b",
             r"\buidai\b",
-            r"unique identification",
-            r"government of india",
-            r"\b\d{4}\s\d{4}\s\d{4}\b",
+            r"\bunique\s+identification\s+authority\b",
         ],
+        "medium": [
+            r"\bunique\s+identification\b",
+            r"\bgovernment\s+of\s+india\b",
+        ],
+        "aadhaar_number": True,
     },
 
     "pan": {
         "display_name": "PAN Card",
-        "patterns": [
-            r"permanent account number",
-            r"income tax department",
-            r"\bpan\b",
-            r"\b[a-z]{5}\d{4}[a-z]\b",
+        "strong": [
+            r"\bpermanent\s+account\s+number\b",
+            r"\bincome\s+tax\s+department\b",
         ],
+        "medium": [
+            r"\bpan\b",
+        ],
+        "pan_number": True,
     },
 
     "driving_license": {
         "display_name": "Driving Licence",
-        "patterns": [
-            r"driving licence",
-            r"driving license",
-            r"driver'?s license",
-            r"driver'?s licence",
-            r"transport department",
-            r"motor vehicle",
-            r"licence to drive",
-            r"license to drive",
-            r"\bdl\s*(?:no|number)?\b",
+        "strong": [
+            r"\bdriving\s+licen[cs]e\b",
+            r"\bdriver'?s\s+licen[cs]e\b",
+            r"\blicen[cs]e\s+to\s+drive\b",
         ],
-    },
-
-    "passport": {
-        "display_name": "Passport",
-        "patterns": [
-            r"\bpassport\b",
-            r"republic of india",
-            r"government of india",
-            r"nationality",
-            r"date of issue",
-            r"date of expiry",
-            r"place of issue",
-            r"\btype\s*p\b",
+        "medium": [
+            r"\btransport\s+department\b",
+            r"\bmotor\s+vehicle\b",
+            r"\bdl\s*(?:no|number)?\b",
         ],
     },
 
     "voter_id": {
         "display_name": "Voter ID",
-        "patterns": [
-            r"election commission of india",
-            r"election commission",
-            r"voter",
-            r"elector",
-            r"electors photo identity card",
-            r"epic",
-            r"epic no",
-            r"voter identity card",
+        "strong": [
+            r"\belection\s+commission\s+of\s+india\b",
+            r"\belectors?\s+photo\s+identity\s+card\b",
+            r"\bvoter\s+identity\s+card\b",
+            r"\bepic\s*(?:no|number)?\b",
+        ],
+        "medium": [
+            r"\bvoter\b",
+            r"\belector\b",
+            r"\bepic\b",
         ],
     },
 
     "ration_card": {
         "display_name": "Ration Card",
-        "patterns": [
-            r"ration card",
-            r"food and civil supplies",
-            r"food supplies department",
-            r"public distribution system",
+        "strong": [
+            r"\bration\s+card\b",
+            r"\bpublic\s+distribution\s+system\b",
+        ],
+        "medium": [
+            r"\bfood\s+and\s+civil\s+supplies\b",
+            r"\bfood\s+supplies\s+department\b",
             r"\bpds\b",
-            r"family card",
+            r"\bfamily\s+card\b",
         ],
     },
 
     "vehicle_rc": {
         "display_name": "Vehicle Registration Certificate",
-        "patterns": [
-            r"registration certificate",
-            r"certificate of registration",
-            r"transport department",
-            r"registered owner",
-            r"registration number",
-            r"vehicle class",
-            r"chassis number",
-            r"engine number",
+        "strong": [
+            r"\bcertificate\s+of\s+registration\b",
+            r"\bregistration\s+certificate\b",
+            r"\bregistered\s+owner\b",
+        ],
+        "medium": [
+            r"\bvehicle\s+class\b",
+            r"\bchassis\s+number\b",
+            r"\bengine\s+number\b",
+            r"\bregistration\s+number\b",
         ],
     },
 
     "gst_certificate": {
         "display_name": "GST Certificate",
-        "patterns": [
-            r"goods and services tax",
-            r"gst certificate",
-            r"gst registration",
-            r"gstin",
-            r"taxpayer",
-            r"registration number",
+        "strong": [
+            r"\bgoods\s+and\s+services\s+tax\b",
+            r"\bgst\s+certificate\b",
+            r"\bgst\s+registration\b",
+        ],
+        "medium": [
+            r"\bgstin\b",
+            r"\btaxpayer\b",
         ],
     },
 }
 
 
+PASSPORT_MRZ_LINE = re.compile(
+    r"^[A-Z0-9<]{30,44}$"
+)
+
+AADHAAR_NUMBER = re.compile(
+    r"\b\d{4}\s?\d{4}\s?\d{4}\b"
+)
+
+PAN_NUMBER = re.compile(
+    r"\b[A-Z]{5}\d{4}[A-Z]\b",
+    re.IGNORECASE,
+)
+
+EPIC_NUMBER = re.compile(
+    r"\b[A-Z]{3}\d{7}\b",
+    re.IGNORECASE,
+)
+
+
 def _normalise_text(text: str) -> str:
-    """
-    Normalise OCR text before classification.
-    """
+    text = str(text or "").upper()
 
-    text = text.lower()
+    text = text.replace("|", " ")
+    text = text.replace("_", " ")
 
-    # Replace common OCR separators with spaces.
-    text = re.sub(r"[_|]+", " ", text)
-
-    # Collapse multiple spaces.
-    text = re.sub(r"\s+", " ", text)
+    text = re.sub(
+        r"\s+",
+        " ",
+        text,
+    )
 
     return text.strip()
 
 
-def _calculate_score(
+def _looks_like_passport_mrz(text: str) -> bool:
+
+    lines = [
+        re.sub(
+            r"\s+",
+            "",
+            line.upper(),
+        )
+        for line in str(text).splitlines()
+        if line.strip()
+    ]
+
+    mrz_lines = [
+        line
+        for line in lines
+        if PASSPORT_MRZ_LINE.fullmatch(line)
+        and "<" in line
+    ]
+
+    if len(mrz_lines) >= 2:
+        return True
+
+    # OCR sometimes drops/changes a few MRZ characters.
+    p_line = any(
+        line.startswith("P<")
+        or line.startswith("P<<")
+        for line in lines
+    )
+
+    return p_line and any(
+        "<" in line and len(line) >= 30
+        for line in lines
+    )
+
+
+def _score_document(
     text: str,
-    patterns: list[str],
+    lines: list[str],
+    config: dict,
 ) -> float:
-    """
-    Calculate a simple confidence score based on
-    how many document-specific indicators were detected.
-    """
 
-    matches = 0
+    score = 0.0
 
-    for pattern in patterns:
-        try:
-            if re.search(pattern, text, re.IGNORECASE):
-                matches += 1
-        except re.error:
-            continue
+    for pattern in config.get("strong", []):
+        if re.search(
+            pattern,
+            text,
+            re.IGNORECASE,
+        ):
+            score += 4.0
 
-    if matches == 0:
-        return 0.0
+    for pattern in config.get("medium", []):
+        if re.search(
+            pattern,
+            text,
+            re.IGNORECASE,
+        ):
+            score += 1.5
 
-    # Base score increases with matched indicators.
-    score = 0.4 + (matches * 0.12)
+    if config.get("aadhaar_number"):
+        if AADHAAR_NUMBER.search(text):
+            score += 4.0
 
-    return min(score, 0.98)
+    if config.get("pan_number"):
+        if PAN_NUMBER.search(text):
+            score += 4.0
+
+    if config.get("mrz"):
+        if _looks_like_passport_mrz(
+            "\n".join(lines)
+        ):
+            score += 10.0
+
+    return score
 
 
 def classify_document(
     ocr_text: str | list[str],
 ) -> dict:
-    """
-    Classify a document from OCR text.
 
-    Returns:
-
-    {
-        "document_type": "...",
-        "display_name": "...",
-        "confidence": 0.0
-    }
-    """
-
-    # Support both a string and list[str].
     if isinstance(ocr_text, list):
-        text = " ".join(
-            str(line)
+
+        lines = [
+            str(line).strip()
             for line in ocr_text
             if line
-        )
+        ]
+
     else:
-        text = str(ocr_text or "")
 
-    text = _normalise_text(text)
+        lines = [
+            line.strip()
+            for line in str(
+                ocr_text or ""
+            ).splitlines()
+            if line.strip()
+        ]
 
-    if not text:
+    if not lines:
+
         return {
             "document_type": "unknown",
             "display_name": "Unknown Document",
             "confidence": 0.0,
         }
 
-    candidates = []
+    text = _normalise_text(
+        "\n".join(lines)
+    )
+
+    scores = []
 
     for document_type, config in DOCUMENT_PATTERNS.items():
 
-        score = _calculate_score(
+        score = _score_document(
             text,
-            config["patterns"],
+            lines,
+            config,
         )
 
         if score > 0:
-            candidates.append(
-                {
-                    "document_type": document_type,
-                    "display_name": config["display_name"],
-                    "confidence": score,
-                }
+
+            scores.append(
+                (
+                    document_type,
+                    score,
+                )
             )
 
-    # No document matched.
-    if not candidates:
+    if not scores:
+
         return {
             "document_type": "unknown",
             "display_name": "Unknown Document",
             "confidence": 0.0,
         }
 
-    # Highest scoring document wins.
-    candidates.sort(
-        key=lambda item: item["confidence"],
+    scores.sort(
+        key=lambda item: item[1],
         reverse=True,
     )
 
-    best = candidates[0]
+    best_type, best_score = scores[0]
+
+    second_score = (
+        scores[1][1]
+        if len(scores) > 1
+        else 0.0
+    )
+
+    # Confidence based on absolute evidence.
+    confidence = min(
+        0.99,
+        0.50 + best_score * 0.045,
+    )
+
+    # Penalise very close classification collisions.
+    if (
+        second_score > 0
+        and best_score - second_score < 2.0
+    ):
+        confidence *= 0.85
 
     return {
-        "document_type": best["document_type"],
-        "display_name": best["display_name"],
+        "document_type": best_type,
+        "display_name": DOCUMENT_PATTERNS[
+            best_type
+        ]["display_name"],
         "confidence": round(
-            best["confidence"],
+            confidence,
             2,
         ),
     }

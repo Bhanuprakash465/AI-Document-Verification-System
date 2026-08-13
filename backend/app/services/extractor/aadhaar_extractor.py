@@ -7,7 +7,9 @@ from typing import Any
 # =========================================================
 
 AADHAAR_PATTERN = re.compile(
-    r"\b\d{4}\s?\d{4}\s?\d{4}\b"
+    r"(?<!\d)"
+    r"(?:\d{4}[\s-]?){2}\d{4}"
+    r"(?!\d)"
 )
 
 DOB_PATTERN = re.compile(
@@ -15,8 +17,28 @@ DOB_PATTERN = re.compile(
 )
 
 PIN_PATTERN = re.compile(
-    r"\b[1-9][0-9]{5}\b"
+    r"(?<!\d)"
+    r"[1-9]\d{5}"
+    r"(?!\d)"
 )
+
+SPACED_PIN_PATTERN = re.compile(
+    r"(?<!\d)"
+    r"[1-9]\d{2}[\s-]?\d{3}"
+    r"(?!\d)"
+)
+
+
+# =========================================================
+# COMMON OCR NOISE
+# =========================================================
+
+OCR_REPLACEMENTS = {
+    "|": "I",
+    "¦": "I",
+    "§": "S",
+    "0": "O",
+}
 
 
 # =========================================================
@@ -28,13 +50,80 @@ def clean_line(text: str) -> str:
     if not text:
         return ""
 
-    text = re.sub(
-        r"\s+",
-        " ",
-        text
-    ).strip()
+    text = str(text)
 
-    return text
+    text = text.replace("\n", " ")
+    text = re.sub(r"\s+", " ", text)
+
+    return text.strip()
+
+
+def normalize_text(text: str) -> str:
+
+    text = clean_line(text)
+
+    return text.upper()
+
+
+def digits_only(text: str) -> str:
+
+    return re.sub(
+        r"\D",
+        "",
+        text or "",
+    )
+
+
+def normalize_aadhaar(number: str):
+
+    digits = digits_only(number)
+
+    if len(digits) != 12:
+        return None
+
+    return (
+        f"{digits[:4]} "
+        f"{digits[4:8]} "
+        f"{digits[8:]}"
+    )
+
+
+def normalize_pin(pin: str):
+
+    digits = digits_only(pin)
+
+    if len(digits) != 6:
+        return None
+
+    if digits[0] == "0":
+        return None
+
+    return digits
+
+
+def normalize_gender(text: str):
+
+    if not text:
+        return None
+
+    value = normalize_text(text)
+
+    if re.search(r"\bFEMALE\b", value):
+        return "FEMALE"
+
+    if re.search(r"\bMALE\b", value):
+        return "MALE"
+
+    if re.search(r"\bTRANSGENDER\b", value):
+        return "TRANSGENDER"
+
+    if re.search(r"\bF\b", value):
+        return "FEMALE"
+
+    if re.search(r"\bM\b", value):
+        return "MALE"
+
+    return None
 
 
 def clean_name(text: str):
@@ -44,11 +133,19 @@ def clean_name(text: str):
 
     text = clean_line(text)
 
-    # Remove obvious OCR noise.
+    # Remove digits.
     text = re.sub(
-        r"[^A-Za-z.\s]",
+        r"\d+",
         " ",
-        text
+        text,
+    )
+
+    # Keep only alphabetic characters,
+    # spaces, apostrophes and dots.
+    text = re.sub(
+        r"[^A-Za-z.'\s]",
+        " ",
+        text,
     )
 
     text = clean_line(text)
@@ -61,156 +158,613 @@ def clean_name(text: str):
     if len(words) < 2:
         return None
 
-    if len(words) > 8:
+    if len(words) > 5:
         return None
 
-    return text.upper()
+    # Reject extremely short/noisy tokens.
+    valid_words = [
+        word
+        for word in words
+        if len(re.sub(r"[^A-Za-z]", "", word)) >= 2
+    ]
 
-
-def normalize_aadhaar(number: str):
-
-    if not number:
+    if len(valid_words) < 2:
         return None
 
-    digits = re.sub(
-        r"\D",
-        "",
-        number
+    # A useful OCR-name heuristic:
+    # mostly alphabetic content.
+    letters = sum(
+        character.isalpha()
+        for character in text
     )
 
-    if len(digits) != 12:
+    total = sum(
+        not character.isspace()
+        for character in text
+    )
+
+    if total == 0:
         return None
 
-    return (
-        f"{digits[:4]} "
-        f"{digits[4:8]} "
-        f"{digits[8:]}"
+    if letters / total < 0.70:
+        return None
+
+    return " ".join(valid_words).upper()
+
+
+def looks_like_name(text: str):
+
+    candidate = clean_name(text)
+
+    if not candidate:
+        return False
+
+    upper = candidate.upper()
+
+    rejected = [
+        "GOVERNMENT OF INDIA",
+        "GOVT OF INDIA",
+        "GOVERNMENT",
+        "UNIQUE IDENTIFICATION",
+        "AUTHORITY",
+        "AADHAAR",
+        "UIDAI",
+        "INDIA",
+        "ADDRESS",
+        "DATE OF BIRTH",
+        "YEAR OF BIRTH",
+        "DOB",
+        "GENDER",
+        "MALE",
+        "FEMALE",
+        "TRANSGENDER",
+        "ENROLMENT",
+        "ENROLLMENT",
+        "IDENTIFICATION",
+        "IDENTITY",
+        "SIGNATURE",
+        "MY AADHAAR",
+        "VID",
+    ]
+
+    for value in rejected:
+        if value in upper:
+            return False
+
+    # Reject text with too many single-character tokens.
+    words = upper.split()
+
+    single_char_count = sum(
+        len(word) == 1
+        for word in words
     )
+
+    if single_char_count > 1:
+        return False
+
+    return True
+
+
+def find_dates(lines: list[str]):
+
+    dates = []
+
+    for line in lines:
+
+        matches = DOB_PATTERN.findall(line)
+
+        for match in matches:
+
+            if match not in dates:
+                dates.append(match)
+
+    return dates
+
+
+def find_aadhaar_numbers(lines: list[str]):
+
+    numbers = []
+
+    for line in lines:
+
+        matches = AADHAAR_PATTERN.findall(line)
+
+        for match in matches:
+
+            normalized = normalize_aadhaar(match)
+
+            if normalized:
+                numbers.append(normalized)
+
+    # Also search complete OCR text because
+    # DocTR may split the number across lines.
+    complete_text = " ".join(lines)
+
+    matches = AADHAAR_PATTERN.findall(
+        complete_text
+    )
+
+    for match in matches:
+
+        normalized = normalize_aadhaar(match)
+
+        if normalized:
+            numbers.append(normalized)
+
+    # Remove duplicates.
+    unique = []
+
+    for number in numbers:
+
+        if number not in unique:
+            unique.append(number)
+
+    return unique
+
+
+def find_pins(lines: list[str]):
+
+    pins = []
+
+    for line in lines:
+
+        # Standard six-digit PIN.
+        for match in PIN_PATTERN.findall(line):
+
+            pin = normalize_pin(match)
+
+            if pin:
+                pins.append(pin)
+
+        # OCR sometimes outputs:
+        # 560 001
+        # 560-001
+        for match in SPACED_PIN_PATTERN.findall(line):
+
+            pin = normalize_pin(match)
+
+            if pin:
+                pins.append(pin)
+
+    # Search complete OCR text as fallback.
+    complete_text = " ".join(lines)
+
+    for match in SPACED_PIN_PATTERN.findall(
+        complete_text
+    ):
+
+        pin = normalize_pin(match)
+
+        if pin:
+            pins.append(pin)
+
+    unique = []
+
+    for pin in pins:
+
+        if pin not in unique:
+            unique.append(pin)
+
+    return unique
 
 
 # =========================================================
-# AADHAAR EXTRACTION
+# ADDRESS DETECTION
+# =========================================================
+
+def is_address_start(line: str):
+
+    normalized = normalize_text(line)
+
+    address_keywords = [
+        "ADDRESS",
+        "ADDR",
+        "S/O",
+        "D/O",
+        "W/O",
+        "C/O",
+        "HOUSE",
+        "H NO",
+        "H.NO",
+        "VILLAGE",
+        "VILL",
+        "TOWN",
+        "CITY",
+        "DISTRICT",
+        "DIST",
+        "STATE",
+        "ROAD",
+        "STREET",
+        "NAGAR",
+        "LAYOUT",
+        "COLONY",
+        "TALUK",
+        "TALUKA",
+        "PIN",
+    ]
+
+    return any(
+        keyword in normalized
+        for keyword in address_keywords
+    )
+
+
+def is_address_stop(line: str):
+
+    normalized = normalize_text(line)
+
+    stop_words = [
+        "DATE OF BIRTH",
+        "DOB",
+        "YEAR OF BIRTH",
+        "GENDER",
+        "MALE",
+        "FEMALE",
+        "TRANSGENDER",
+        "AADHAAR NUMBER",
+        "AADHAAR NO",
+        "UIDAI",
+        "UNIQUE IDENTIFICATION",
+        "GOVERNMENT OF INDIA",
+        "SIGNATURE",
+        "ENROLMENT",
+        "ENROLLMENT",
+    ]
+
+    return any(
+        value in normalized
+        for value in stop_words
+    )
+
+
+def extract_address(
+    lines: list[str],
+    pin_code: str | None,
+):
+
+    # -----------------------------------------------------
+    # First: find explicit address label.
+    # -----------------------------------------------------
+
+    start_index = None
+
+    for index, line in enumerate(lines):
+
+        if is_address_start(line):
+
+            normalized = normalize_text(line)
+
+            if (
+                "ADDRESS" in normalized
+                or "ADDR" in normalized
+            ):
+
+                start_index = index
+                break
+
+    if start_index is not None:
+
+        address_lines = []
+
+        first_line = re.sub(
+            r"(?i).*?\bADDRESS\b\s*[:\-]?\s*",
+            "",
+            lines[start_index],
+        ).strip()
+
+        if (
+            first_line
+            and first_line.upper() != "ADDRESS"
+        ):
+
+            address_lines.append(
+                first_line
+            )
+
+        for index in range(
+            start_index + 1,
+            min(
+                start_index + 8,
+                len(lines),
+            ),
+        ):
+
+            line = clean_line(
+                lines[index]
+            )
+
+            if not line:
+                continue
+
+            if is_address_stop(line):
+                break
+
+            address_lines.append(line)
+
+            # Stop after the line containing PIN.
+            if pin_code and pin_code in digits_only(line):
+                break
+
+        if address_lines:
+
+            address = clean_line(
+                " ".join(address_lines)
+            )
+
+            # Remove PIN from address ending.
+            if pin_code:
+
+                address = re.sub(
+                    rf"\b{re.escape(pin_code[:3])}"
+                    rf"[\s-]?{re.escape(pin_code[3:])}\b",
+                    "",
+                    address,
+                )
+
+                address = clean_line(
+                    address
+                )
+
+            if len(address) >= 8:
+
+                return address
+
+    # -----------------------------------------------------
+    # Second: reconstruct address from lines around PIN.
+    # -----------------------------------------------------
+
+    if pin_code:
+
+        for index, line in enumerate(lines):
+
+            if pin_code in digits_only(line):
+
+                address_lines = []
+
+                # Look backwards for up to 4 lines.
+                start = max(
+                    0,
+                    index - 4,
+                )
+
+                for previous_index in range(
+                    start,
+                    index + 1,
+                ):
+
+                    candidate = clean_line(
+                        lines[previous_index]
+                    )
+
+                    if not candidate:
+                        continue
+
+                    if is_address_stop(
+                        candidate
+                    ):
+                        continue
+
+                    # Don't add Aadhaar number.
+                    if AADHAAR_PATTERN.search(
+                        candidate
+                    ):
+                        continue
+
+                    # Don't add obvious DOB.
+                    if DOB_PATTERN.search(
+                        candidate
+                    ):
+                        continue
+
+                    address_lines.append(
+                        candidate
+                    )
+
+                if address_lines:
+
+                    address = clean_line(
+                        " ".join(address_lines)
+                    )
+
+                    if len(address) >= 8:
+
+                        return address
+
+    return None
+
+
+# =========================================================
+# NAME DETECTION
+# =========================================================
+
+def extract_name(
+    lines: list[str],
+    dates: list[str],
+    aadhaar_numbers: list[str],
+):
+
+    rejected = [
+        "GOVERNMENT OF INDIA",
+        "GOVT OF INDIA",
+        "UNIQUE IDENTIFICATION",
+        "AUTHORITY",
+        "AADHAAR",
+        "UIDAI",
+        "INDIA",
+        "ADDRESS",
+        "DATE OF BIRTH",
+        "DOB",
+        "YEAR OF BIRTH",
+        "GENDER",
+        "MALE",
+        "FEMALE",
+        "TRANSGENDER",
+        "ENROLMENT",
+        "ENROLLMENT",
+        "IDENTIFICATION",
+        "IDENTITY",
+        "SIGNATURE",
+        "MY AADHAAR",
+    ]
+
+    candidates = []
+
+    for index, line in enumerate(lines):
+
+        candidate = clean_name(line)
+
+        if not candidate:
+            continue
+
+        upper = candidate.upper()
+
+        if any(
+            word in upper
+            for word in rejected
+        ):
+            continue
+
+        if AADHAAR_PATTERN.search(line):
+            continue
+
+        if DOB_PATTERN.search(line):
+            continue
+
+        if PIN_PATTERN.search(
+            digits_only(line)
+        ):
+            continue
+
+        # Don't select lines with too much
+        # OCR noise.
+        words = candidate.split()
+
+        if any(
+            len(word) == 1
+            for word in words
+        ):
+            continue
+
+        # Score candidate.
+        score = 0
+
+        # Names generally contain 2-4 words.
+        if 2 <= len(words) <= 4:
+            score += 5
+
+        # Prefer reasonable word lengths.
+        if all(
+            2 <= len(word) <= 15
+            for word in words
+        ):
+            score += 3
+
+        # Prefer candidates near DOB/gender.
+        nearby = " ".join(
+            lines[
+                index + 1:
+                min(index + 4, len(lines))
+            ]
+        ).lower()
+
+        if (
+            DOB_PATTERN.search(nearby)
+            or "male" in nearby
+            or "female" in nearby
+            or re.search(
+                r"\b[MF]\b",
+                nearby,
+            )
+        ):
+            score += 6
+
+        # Penalize suspiciously long names.
+        if len(candidate) > 40:
+            score -= 5
+
+        candidates.append(
+            (
+                score,
+                index,
+                candidate,
+            )
+        )
+
+    if not candidates:
+        return None
+
+    candidates.sort(
+        key=lambda item: (
+            item[0],
+            -item[1],
+        ),
+        reverse=True,
+    )
+
+    return candidates[0][2]
+
+
+# =========================================================
+# MAIN AADHAAR EXTRACTION
 # =========================================================
 
 def extract_aadhaar_fields(
-    ocr_text: list[str]
+    ocr_text: list[str],
 ) -> dict[str, Any]:
 
     fields = {
-
         "document_type": "aadhaar",
-
         "name": None,
-
         "aadhaar_number": None,
-
         "dob": None,
-
         "gender": None,
-
         "address": None,
-
         "pin_code": None,
     }
 
-
     # -----------------------------------------------------
-    # CLEAN OCR LINES
+    # CLEAN OCR
     # -----------------------------------------------------
 
     lines = [
-
         clean_line(line)
-
         for line in ocr_text
-
-        if line and line.strip()
+        if line and clean_line(line)
     ]
-
 
     if not lines:
         return fields
 
+    # -----------------------------------------------------
+    # COMPLETE OCR TEXT
+    # -----------------------------------------------------
 
     full_text = "\n".join(lines)
-
 
     # =====================================================
     # AADHAAR NUMBER
     # =====================================================
 
-    aadhaar_match = AADHAAR_PATTERN.search(
-        full_text
+    aadhaar_numbers = find_aadhaar_numbers(
+        lines
     )
 
-    if aadhaar_match:
+    if aadhaar_numbers:
 
+        # Prefer the first valid 12-digit number.
         fields["aadhaar_number"] = (
-            normalize_aadhaar(
-                aadhaar_match.group()
-            )
+            aadhaar_numbers[0]
         )
 
-
     # =====================================================
-    # DATE OF BIRTH
+    # DOB
     # =====================================================
 
-    for index, line in enumerate(lines):
+    dates = find_dates(lines)
 
-        normalized = line.lower()
+    if dates:
 
-
-        if (
-            "date of birth" in normalized
-            or re.search(r"\bdob\b", normalized)
-            or "birth" in normalized
-        ):
-
-            date_match = DOB_PATTERN.search(
-                line
-            )
-
-            if date_match:
-
-                fields["dob"] = (
-                    date_match.group()
-                )
-
-                break
-
-
-            # Check next OCR line.
-
-            if index + 1 < len(lines):
-
-                date_match = DOB_PATTERN.search(
-                    lines[index + 1]
-                )
-
-                if date_match:
-
-                    fields["dob"] = (
-                        date_match.group()
-                    )
-
-                    break
-
-
-    # -----------------------------------------------------
-    # FALLBACK DOB
-    # -----------------------------------------------------
-
-    if not fields["dob"]:
-
-        dates = DOB_PATTERN.findall(
-            full_text
-        )
-
-        if dates:
-
-            fields["dob"] = dates[0]
-
+        fields["dob"] = dates[0]
 
     # =====================================================
     # GENDER
@@ -218,424 +772,104 @@ def extract_aadhaar_fields(
 
     for line in lines:
 
-        normalized = line.lower()
+        gender = normalize_gender(line)
 
+        if gender:
 
-        if re.search(
-            r"\b(male|female|transgender)\b",
-            normalized
-        ):
-
-            match = re.search(
-                r"\b(male|female|transgender)\b",
-                normalized
-            )
-
-            if match:
-
-                fields["gender"] = (
-                    match.group(1).upper()
-                )
-
-                break
-
-
-        # Common Hindi/English OCR layouts.
-
-        if re.search(
-            r"\b(m|f)\b",
-            normalized
-        ):
-
-            match = re.search(
-                r"\b(m|f)\b",
-                normalized
-            )
-
-            if match:
-
-                value = match.group(1).upper()
-
-                fields["gender"] = (
-                    "MALE"
-                    if value == "M"
-                    else "FEMALE"
-                )
-
-                break
-
-
-    # =====================================================
-    # NAME
-    # =====================================================
-
-    name_rejected = [
-
-        "GOVERNMENT OF INDIA",
-
-        "GOVT OF INDIA",
-
-        "UNIQUE IDENTIFICATION",
-
-        "AUTHORITY",
-
-        "AADHAAR",
-
-        "AADHAAR CARD",
-
-        "UIDAI",
-
-        "DATE OF BIRTH",
-
-        "DOB",
-
-        "YEAR OF BIRTH",
-
-        "MALE",
-
-        "FEMALE",
-
-        "ADDRESS",
-
-        "INDIA",
-
-        "SIGNATURE",
-
-        "ENROLMENT",
-
-        "ENROLLMENT",
-
-        "IDENTIFICATION",
-
-        "IDENTITY",
-
-        "MY AADHAAR",
-
-    ]
-
-
-    # -----------------------------------------------------
-    # Explicit NAME label
-    # -----------------------------------------------------
-
-    for index, line in enumerate(lines):
-
-        normalized = line.lower()
-
-
-        if "name" not in normalized:
-
-            continue
-
-
-        # Ignore labels that are clearly not person names.
-
-        if (
-            "father" in normalized
-            or "husband" in normalized
-            or "mother" in normalized
-        ):
-
-            continue
-
-
-        # Same-line extraction.
-
-        same_line = re.sub(
-            r"(?i).*?\bname\b\s*[:\-]?\s*",
-            "",
-            line
-        ).strip()
-
-
-        candidate = clean_name(
-            same_line
-        )
-
-
-        if candidate:
-
-            upper_candidate = candidate.upper()
-
-
-            if not any(
-                rejected in upper_candidate
-                for rejected in name_rejected
-            ):
-
-                fields["name"] = candidate
-
-                break
-
-
-        # Next-line extraction.
-
-        if index + 1 < len(lines):
-
-            candidate = clean_name(
-                lines[index + 1]
-            )
-
-
-            if candidate:
-
-                upper_candidate = candidate.upper()
-
-
-                if not any(
-                    rejected in upper_candidate
-                    for rejected in name_rejected
-                ):
-
-                    fields["name"] = candidate
-
-                    break
-
-
-    # =====================================================
-    # FALLBACK NAME DETECTION
-    # =====================================================
-
-    if not fields["name"]:
-
-        candidates = []
-
-
-        for index, line in enumerate(lines):
-
-            candidate = clean_name(
-                line
-            )
-
-
-            if not candidate:
-                continue
-
-
-            upper = candidate.upper()
-
-
-            # Reject obvious non-name lines.
-
-            if any(
-                rejected in upper
-                for rejected in name_rejected
-            ):
-                continue
-
-
-            # Reject Aadhaar number.
-
-            if AADHAAR_PATTERN.fullmatch(
-                candidate
-            ):
-                continue
-
-
-            # Reject dates.
-
-            if DOB_PATTERN.fullmatch(
-                candidate
-            ):
-                continue
-
-
-            # Reject PIN-only lines.
-
-            if PIN_PATTERN.fullmatch(
-                candidate
-            ):
-                continue
-
-
-            candidates.append(
-                (
-                    index,
-                    candidate
-                )
-            )
-
-
-        if candidates:
-
-            # Prefer realistic multi-word names.
-
-            candidates.sort(
-                key=lambda item: (
-                    len(item[1].split()),
-                    len(item[1])
-                ),
-                reverse=True
-            )
-
-
-            fields["name"] = (
-                candidates[0][1]
-            )
-
+            fields["gender"] = gender
+            break
 
     # =====================================================
     # PIN CODE
     # =====================================================
 
-    # Prefer a PIN near an address-related line.
+    pins = find_pins(lines)
 
-    for index, line in enumerate(lines):
+    if pins:
 
-        normalized = line.lower()
+        # Prefer PINs appearing near address-like text.
+        selected_pin = None
 
+        for index, line in enumerate(lines):
 
-        if "address" in normalized:
+            if is_address_start(line):
 
-            pin_match = PIN_PATTERN.search(
-                line
-            )
-
-            if pin_match:
-
-                fields["pin_code"] = (
-                    pin_match.group()
+                nearby = " ".join(
+                    lines[
+                        index:
+                        min(index + 6, len(lines))
+                    ]
                 )
 
-                break
-
-
-            # Search a few lines after ADDRESS.
-
-            for next_index in range(
-                index + 1,
-                min(index + 5, len(lines))
-            ):
-
-                pin_match = PIN_PATTERN.search(
-                    lines[next_index]
+                nearby_pins = find_pins(
+                    [nearby]
                 )
 
-                if pin_match:
+                if nearby_pins:
 
-                    fields["pin_code"] = (
-                        pin_match.group()
+                    selected_pin = (
+                        nearby_pins[0]
                     )
 
                     break
 
-
-            if fields["pin_code"]:
-                break
-
-
-    # -----------------------------------------------------
-    # Fallback PIN detection
-    # -----------------------------------------------------
-
-    if not fields["pin_code"]:
-
-        pin_matches = PIN_PATTERN.findall(
-            full_text
+        fields["pin_code"] = (
+            selected_pin
+            or pins[-1]
         )
 
-        if pin_matches:
+    # =====================================================
+    # NAME
+    # =====================================================
 
-            fields["pin_code"] = (
-                pin_matches[-1]
-            )
-
+    fields["name"] = extract_name(
+        lines,
+        dates,
+        aadhaar_numbers,
+    )
 
     # =====================================================
     # ADDRESS
     # =====================================================
 
-    address_lines = []
+    fields["address"] = extract_address(
+        lines,
+        fields["pin_code"],
+    )
 
-    address_started = False
+    # =====================================================
+    # FINAL CLEANUP
+    # =====================================================
 
+    if fields["name"]:
 
-    for index, line in enumerate(lines):
-
-        normalized = line.lower()
-
-
-        if "address" in normalized:
-
-            address_started = True
-
-
-            same_line = re.sub(
-                r"(?i).*?\baddress\b\s*[:\-]?\s*",
-                "",
-                line
-            ).strip()
-
-
-            if same_line:
-
-                address_lines.append(
-                    same_line
-                )
-
-
-            continue
-
-
-        if address_started:
-
-            upper = line.upper()
-
-
-            # Stop at obvious document fields.
-
-            if any(
-                stop_word in normalized
-                for stop_word in [
-                    "date of birth",
-                    "dob",
-                    "gender",
-                    "male",
-                    "female",
-                    "signature",
-                    "aadhaar",
-                    "government of india",
-                    "unique identification"
-                ]
-            ):
-
-                break
-
-
-            address_lines.append(line)
-
-
-            if len(address_lines) >= 5:
-
-                break
-
-
-    if address_lines:
-
-        address = " ".join(
-            address_lines
+        fields["name"] = clean_name(
+            fields["name"]
         )
 
+    if fields["pin_code"]:
 
-        address = clean_line(
-            address
+        fields["pin_code"] = normalize_pin(
+            fields["pin_code"]
         )
 
+    if fields["aadhaar_number"]:
 
-        if address:
-
-            fields["address"] = address
-
+        fields["aadhaar_number"] = (
+            normalize_aadhaar(
+                fields["aadhaar_number"]
+            )
+        )
 
     return fields
 
 
 # =========================================================
-# BACKWARD-COMPATIBLE ALIAS
+# BACKWARD COMPATIBILITY
 # =========================================================
 
 def extract_fields(
-    ocr_text: list[str]
+    ocr_text: list[str],
 ) -> dict[str, Any]:
 
     return extract_aadhaar_fields(
