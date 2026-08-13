@@ -2,131 +2,304 @@
    VERIFYAI - FRONTEND APPLICATION
    ========================================================= */
 
+"use strict";
+
 const API_URL = "/verify-document";
+const MAX_FILE_SIZE = 10 * 1024 * 1024;
+
+const ALLOWED_TYPES = [
+    "image/jpeg",
+    "image/png",
+    "application/pdf"
+];
+
+/* =========================================================
+   PAGE LOADER
+   ========================================================= */
+
+window.addEventListener("load", () => {
+    const loader = document.getElementById("page-loader");
+
+    if (!loader) {
+        return;
+    }
+
+    loader.classList.add("loaded");
+
+    setTimeout(() => {
+        loader.remove();
+    }, 900);
+});
+
 
 /* =========================================================
    DOM ELEMENTS
    ========================================================= */
 
-const fileInput = document.getElementById("fileInput");
-const chooseFileButton = document.getElementById("chooseFile");
-const uploadPanel = document.getElementById("uploadPanel");
-const uploadContent = document.getElementById("uploadContent");
-const fileNameElement = document.getElementById("fileName");
-const verifyButton = document.getElementById("verifyButton");
+const fileInput =
+    document.getElementById("file-input");
 
-const resultSection = document.getElementById("result");
-const resultGrid = document.getElementById("resultGrid");
-const resultStatus = document.getElementById("resultStatus");
-const resultErrors = document.getElementById("resultErrors");
+const chooseFileButton =
+    document.getElementById("browse-button");
 
-const detectedDocumentElement =
-    document.getElementById("detectedDocument");
+const uploadPanel =
+    document.getElementById("upload-form");
 
-const detectionConfidenceElement =
-    document.getElementById("detectionConfidence");
+const uploadContent =
+    document.querySelector(".upload-content");
+
+const fileNameElement =
+    document.getElementById("file-name");
+
+const verifyButton =
+    document.getElementById("verify-button");
+
+const resultSection =
+    document.getElementById("result");
+
 
 /* =========================================================
    STATE
    ========================================================= */
 
 let selectedFile = null;
+let originalVerifyButtonHTML = null;
+
 
 /* =========================================================
-   INITIAL STATE
+   INITIALIZATION
    ========================================================= */
 
-if (verifyButton) {
-    verifyButton.disabled = true;
-}
+document.addEventListener("DOMContentLoaded", () => {
 
-if (resultSection) {
+    initializeResultSection();
+    initializeUpload();
+    initializeNavigation();
+
+    if (verifyButton) {
+        verifyButton.disabled = true;
+
+        originalVerifyButtonHTML =
+            verifyButton.innerHTML;
+    }
+
+    console.log(
+        "VERIFYAI frontend initialized."
+    );
+});
+
+
+/* =========================================================
+   RESULT SECTION INITIALIZATION
+   ========================================================= */
+
+function initializeResultSection() {
+
+    if (!resultSection) {
+        return;
+    }
+
+    resultSection.innerHTML = `
+        <div class="result-header">
+            <div>
+                <span class="section-number">
+                    04 / RESULT
+                </span>
+
+                <h2>
+                    Verification
+                    <span class="serif">result.</span>
+                </h2>
+            </div>
+
+            <span
+                id="resultStatus"
+                class="result-status"
+            >
+                WAITING
+            </span>
+        </div>
+
+        <div
+            id="resultGrid"
+            class="result-grid"
+        ></div>
+
+        <div
+            id="resultErrors"
+            class="result-errors hidden"
+        ></div>
+    `;
+
     resultSection.classList.add("hidden");
 }
 
+
 /* =========================================================
-   CHOOSE FILE
+   RESULT DOM REFERENCES
    ========================================================= */
 
-if (chooseFileButton && fileInput) {
-    chooseFileButton.addEventListener("click", () => {
-        fileInput.click();
-    });
+function getResultElements() {
+
+    return {
+        resultGrid:
+            document.getElementById("resultGrid"),
+
+        resultStatus:
+            document.getElementById("resultStatus"),
+
+        resultErrors:
+            document.getElementById("resultErrors")
+    };
 }
 
+
 /* =========================================================
-   FILE SELECTED
+   UPLOAD INITIALIZATION
    ========================================================= */
 
-if (fileInput) {
-    fileInput.addEventListener("change", (event) => {
-        const files = event.target.files;
+function initializeUpload() {
 
-        if (!files || files.length === 0) {
-            return;
-        }
+    if (chooseFileButton && fileInput) {
 
-        handleSelectedFile(files[0]);
-    });
+        chooseFileButton.addEventListener(
+            "click",
+            (event) => {
+
+                event.preventDefault();
+
+                fileInput.click();
+            }
+        );
+    }
+
+
+    if (fileInput) {
+
+        fileInput.addEventListener(
+            "change",
+            (event) => {
+
+                const files =
+                    event.target.files;
+
+                if (
+                    !files ||
+                    files.length === 0
+                ) {
+                    return;
+                }
+
+                handleSelectedFile(
+                    files[0]
+                );
+            }
+        );
+    }
+
+
+    if (uploadPanel) {
+
+        uploadPanel.addEventListener(
+            "dragover",
+            (event) => {
+
+                event.preventDefault();
+
+                uploadPanel.classList.add(
+                    "dragging"
+                );
+            }
+        );
+
+
+        uploadPanel.addEventListener(
+            "dragleave",
+            (event) => {
+
+                event.preventDefault();
+
+                if (
+                    event.relatedTarget &&
+                    uploadPanel.contains(
+                        event.relatedTarget
+                    )
+                ) {
+                    return;
+                }
+
+                uploadPanel.classList.remove(
+                    "dragging"
+                );
+            }
+        );
+
+
+        uploadPanel.addEventListener(
+            "drop",
+            (event) => {
+
+                event.preventDefault();
+
+                uploadPanel.classList.remove(
+                    "dragging"
+                );
+
+                const files =
+                    event.dataTransfer.files;
+
+                if (
+                    !files ||
+                    files.length === 0
+                ) {
+                    return;
+                }
+
+                handleSelectedFile(
+                    files[0]
+                );
+            }
+        );
+    }
+
+
+    if (verifyButton) {
+
+        verifyButton.addEventListener(
+            "click",
+            async (event) => {
+
+                event.preventDefault();
+
+                if (!selectedFile) {
+                    return;
+                }
+
+                await verifyDocument();
+            }
+        );
+    }
 }
 
-/* =========================================================
-   DRAG AND DROP
-   ========================================================= */
-
-if (uploadPanel) {
-
-    uploadPanel.addEventListener("dragover", (event) => {
-
-        event.preventDefault();
-
-        uploadPanel.classList.add("dragging");
-    });
-
-
-    uploadPanel.addEventListener("dragleave", (event) => {
-
-        event.preventDefault();
-
-        uploadPanel.classList.remove("dragging");
-    });
-
-
-    uploadPanel.addEventListener("drop", (event) => {
-
-        event.preventDefault();
-
-        uploadPanel.classList.remove("dragging");
-
-        const files = event.dataTransfer.files;
-
-        if (!files || files.length === 0) {
-            return;
-        }
-
-        handleSelectedFile(files[0]);
-    });
-}
 
 /* =========================================================
-   HANDLE SELECTED FILE
+   FILE VALIDATION
    ========================================================= */
 
 function handleSelectedFile(file) {
 
-    const allowedTypes = [
-        "image/jpeg",
-        "image/png",
-        "application/pdf"
-    ];
+    clearUploadError();
 
-    const maxSize = 10 * 1024 * 1024;
+    if (!file) {
+        return;
+    }
+
 
     /* -----------------------------------------------------
-       TYPE CHECK
+       FILE TYPE
        ----------------------------------------------------- */
 
-    if (!allowedTypes.includes(file.type)) {
+    if (!ALLOWED_TYPES.includes(file.type)) {
 
         showUploadError(
             "Only JPG, PNG and PDF files are supported."
@@ -139,10 +312,10 @@ function handleSelectedFile(file) {
 
 
     /* -----------------------------------------------------
-       SIZE CHECK
+       FILE SIZE
        ----------------------------------------------------- */
 
-    if (file.size > maxSize) {
+    if (file.size > MAX_FILE_SIZE) {
 
         showUploadError(
             "The selected file is larger than 10 MB."
@@ -169,6 +342,9 @@ function handleSelectedFile(file) {
 
         fileNameElement.textContent =
             file.name.toUpperCase();
+
+        fileNameElement.style.color =
+            "";
     }
 
 
@@ -182,22 +358,12 @@ function handleSelectedFile(file) {
 
 
     /* -----------------------------------------------------
-       CLEAR PREVIOUS RESULT
+       CLEAR OLD RESULT
        ----------------------------------------------------- */
 
-    if (resultSection) {
-        resultSection.classList.add("hidden");
-    }
-
-    if (resultGrid) {
-        resultGrid.innerHTML = "";
-    }
-
-    if (resultErrors) {
-        resultErrors.innerHTML = "";
-        resultErrors.classList.add("hidden");
-    }
+    hideResult();
 }
+
 
 /* =========================================================
    UPLOAD ERROR
@@ -210,10 +376,27 @@ function showUploadError(message) {
     }
 
     fileNameElement.textContent =
-        message.toUpperCase();
+        String(message).toUpperCase();
 
-    fileNameElement.style.color = "#9b1c1c";
+    fileNameElement.style.color =
+        "#9b1c1c";
 }
+
+
+/* =========================================================
+   CLEAR UPLOAD ERROR
+   ========================================================= */
+
+function clearUploadError() {
+
+    if (!fileNameElement) {
+        return;
+    }
+
+    fileNameElement.style.color =
+        "";
+}
+
 
 /* =========================================================
    RESET FILE
@@ -228,8 +411,12 @@ function resetFile() {
     }
 
     if (fileNameElement) {
-        fileNameElement.textContent = "";
-        fileNameElement.style.color = "";
+
+        fileNameElement.textContent =
+            "NO FILE SELECTED";
+
+        fileNameElement.style.color =
+            "";
     }
 
     if (verifyButton) {
@@ -237,24 +424,42 @@ function resetFile() {
     }
 }
 
+
 /* =========================================================
-   VERIFY DOCUMENT
+   HIDE RESULT
    ========================================================= */
 
-if (verifyButton) {
+function hideResult() {
 
-    verifyButton.addEventListener("click", async () => {
+    if (!resultSection) {
+        return;
+    }
 
-        if (!selectedFile) {
-            return;
-        }
+    resultSection.classList.add(
+        "hidden"
+    );
 
-        await verifyDocument();
-    });
+    const elements =
+        getResultElements();
+
+    if (elements.resultGrid) {
+        elements.resultGrid.innerHTML = "";
+    }
+
+    if (elements.resultErrors) {
+
+        elements.resultErrors.innerHTML =
+            "";
+
+        elements.resultErrors.classList.add(
+            "hidden"
+        );
+    }
 }
 
+
 /* =========================================================
-   MAIN VERIFICATION FUNCTION
+   VERIFY DOCUMENT
    ========================================================= */
 
 async function verifyDocument() {
@@ -264,18 +469,31 @@ async function verifyDocument() {
     }
 
 
+    if (!verifyButton) {
+        return;
+    }
+
+
     /* -----------------------------------------------------
-       BUTTON LOADING STATE
+       LOADING STATE
        ----------------------------------------------------- */
 
     verifyButton.disabled = true;
 
-    const originalButtonHTML =
-        verifyButton.innerHTML;
+    if (!originalVerifyButtonHTML) {
+
+        originalVerifyButtonHTML =
+            verifyButton.innerHTML;
+    }
 
     verifyButton.innerHTML = `
-        <span>PROCESSING DOCUMENT...</span>
-        <span class="verify-arrow">↻</span>
+        <span>
+            PROCESSING DOCUMENT...
+        </span>
+
+        <span class="verify-arrow">
+            ↻
+        </span>
     `;
 
 
@@ -283,7 +501,8 @@ async function verifyDocument() {
        FORM DATA
        ----------------------------------------------------- */
 
-    const formData = new FormData();
+    const formData =
+        new FormData();
 
     formData.append(
         "file",
@@ -293,32 +512,61 @@ async function verifyDocument() {
 
     try {
 
-        /* -------------------------------------------------
-           API REQUEST
-           ------------------------------------------------- */
-
-        const response = await fetch(
-            API_URL,
-            {
-                method: "POST",
-                body: formData
-            }
+        console.log(
+            "Sending document to:",
+            API_URL
         );
 
 
         /* -------------------------------------------------
-           READ RESPONSE
+           API REQUEST
            ------------------------------------------------- */
 
-        let data = null;
+        const response =
+            await fetch(
+                API_URL,
+                {
+                    method: "POST",
+                    body: formData
+                }
+            );
 
-        try {
 
-            data = await response.json();
+        console.log(
+            "Verification response:",
+            response.status
+        );
 
-        } catch (jsonError) {
+
+        /* -------------------------------------------------
+           RESPONSE
+           ------------------------------------------------- */
+
+        const contentType =
+            response.headers.get(
+                "content-type"
+            ) || "";
+
+
+        let data;
+
+
+        if (
+            contentType.includes(
+                "application/json"
+            )
+        ) {
+
+            data =
+                await response.json();
+
+        } else {
+
+            const text =
+                await response.text();
 
             throw new Error(
+                text ||
                 "The server returned an invalid response."
             );
         }
@@ -333,30 +581,40 @@ async function verifyDocument() {
             let message =
                 "Document verification failed.";
 
-            if (data) {
 
-                if (typeof data.detail === "string") {
+            if (
+                data &&
+                typeof data.detail === "string"
+            ) {
 
-                    message = data.detail;
+                message =
+                    data.detail;
 
-                } else if (
-                    data.detail &&
-                    typeof data.detail.message === "string"
-                ) {
+            } else if (
+                data &&
+                data.detail &&
+                typeof data.detail.message ===
+                    "string"
+            ) {
 
-                    message = data.detail.message;
-                }
+                message =
+                    data.detail.message;
             }
 
-            throw new Error(message);
+
+            throw new Error(
+                message
+            );
         }
 
 
         /* -------------------------------------------------
-           DISPLAY RESULT
+           RENDER RESULT
            ------------------------------------------------- */
 
-        renderVerificationResult(data);
+        renderVerificationResult(
+            data
+        );
 
 
     } catch (error) {
@@ -366,25 +624,25 @@ async function verifyDocument() {
             error
         );
 
+
         renderErrorResult(
-            error.message ||
-            "Unable to process the document."
+            error &&
+            error.message
+                ? error.message
+                : "Unable to process the document."
         );
 
 
     } finally {
 
-        /* -------------------------------------------------
-           RESTORE BUTTON
-           ------------------------------------------------- */
-
         verifyButton.disabled =
             !selectedFile;
 
         verifyButton.innerHTML =
-            originalButtonHTML;
+            originalVerifyButtonHTML;
     }
 }
+
 
 /* =========================================================
    RENDER VERIFICATION RESULT
@@ -397,18 +655,43 @@ function renderVerificationResult(data) {
     }
 
 
+    const elements =
+        getResultElements();
+
+
+    const resultGrid =
+        elements.resultGrid;
+
+    const resultStatus =
+        elements.resultStatus;
+
+    const resultErrors =
+        elements.resultErrors;
+
+
     /* -----------------------------------------------------
-       RESULT DATA
+       RESPONSE DATA
        ----------------------------------------------------- */
 
     const fields =
-        data.fields || {};
+        data &&
+        data.fields
+            ? normalizeObject(data.fields)
+            : {};
+
 
     const documentInfo =
-        data.document || {};
+        data &&
+        data.document
+            ? data.document
+            : {};
+
 
     const validation =
-        data.validation || {};
+        data &&
+        data.validation
+            ? data.validation
+            : {};
 
 
     /* -----------------------------------------------------
@@ -419,6 +702,7 @@ function renderVerificationResult(data) {
         normalizeDocumentType(
             data.document_type ||
             documentInfo.document_type ||
+            fields.document_type ||
             "unknown"
         );
 
@@ -439,39 +723,15 @@ function renderVerificationResult(data) {
        ----------------------------------------------------- */
 
     const confidence =
-        documentInfo.confidence;
+        getConfidence(
+            documentInfo,
+            validation,
+            data
+        );
 
 
     /* -----------------------------------------------------
-       HEADER
-       ----------------------------------------------------- */
-
-    if (detectedDocumentElement) {
-
-        detectedDocumentElement.textContent =
-            displayName.toUpperCase();
-    }
-
-
-    if (detectionConfidenceElement) {
-
-        if (
-            typeof confidence === "number"
-        ) {
-
-            detectionConfidenceElement.textContent =
-                `${Math.round(confidence * 100)}%`;
-
-        } else {
-
-            detectionConfidenceElement.textContent =
-                "N/A";
-        }
-    }
-
-
-    /* -----------------------------------------------------
-       VALIDATION STATUS
+       RESULT STATUS
        ----------------------------------------------------- */
 
     const isValid =
@@ -485,13 +745,11 @@ function renderVerificationResult(data) {
             "invalid"
         );
 
-
         resultStatus.classList.add(
             isValid
                 ? "valid"
                 : "invalid"
         );
-
 
         resultStatus.textContent =
             isValid
@@ -504,17 +762,41 @@ function renderVerificationResult(data) {
        RESULT FIELDS
        ----------------------------------------------------- */
 
-    renderFields(
-        documentType,
-        fields
-    );
+    if (resultGrid) {
+
+        resultGrid.innerHTML = "";
+
+
+        addResultField(
+            resultGrid,
+            "DOCUMENT TYPE",
+            displayName
+        );
+
+
+        addResultField(
+            resultGrid,
+            "DETECTION CONFIDENCE",
+            confidence !== null
+                ? `${Math.round(confidence * 100)}%`
+                : "N/A"
+        );
+
+
+        renderDocumentFields(
+            resultGrid,
+            documentType,
+            fields
+        );
+    }
 
 
     /* -----------------------------------------------------
-       VALIDATION ERRORS
+       VALIDATION MESSAGES
        ----------------------------------------------------- */
 
-    renderValidationErrors(
+    renderValidationMessages(
+        resultErrors,
         validation
     );
 
@@ -529,7 +811,7 @@ function renderVerificationResult(data) {
 
 
     /* -----------------------------------------------------
-       SCROLL TO RESULT
+       SCROLL
        ----------------------------------------------------- */
 
     setTimeout(() => {
@@ -542,6 +824,48 @@ function renderVerificationResult(data) {
     }, 100);
 }
 
+
+/* =========================================================
+   GET CONFIDENCE
+   ========================================================= */
+
+function getConfidence(
+    documentInfo,
+    validation,
+    data
+) {
+
+    const candidates = [
+        documentInfo.confidence,
+        validation.confidence,
+        data.confidence
+    ];
+
+
+    for (
+        const value of candidates
+    ) {
+
+        if (
+            typeof value === "number" &&
+            Number.isFinite(value)
+        ) {
+
+            return Math.max(
+                0,
+                Math.min(
+                    1,
+                    value
+                )
+            );
+        }
+    }
+
+
+    return null;
+}
+
+
 /* =========================================================
    NORMALIZE DOCUMENT TYPE
    ========================================================= */
@@ -552,6 +876,7 @@ function normalizeDocumentType(type) {
         return "unknown";
     }
 
+
     const normalized =
         String(type)
             .toLowerCase()
@@ -559,28 +884,8 @@ function normalizeDocumentType(type) {
 
 
     if (
-        normalized === "driving licence" ||
-        normalized === "driving_license" ||
-        normalized === "driving-license" ||
-        normalized === "license"
-    ) {
-
-        return "driving_license";
-    }
-
-
-    if (
-        normalized === "voter id" ||
-        normalized === "voter_id" ||
-        normalized === "voter-id" ||
-        normalized === "epic"
-    ) {
-
-        return "voter_id";
-    }
-
-
-    if (
+        normalized === "aadhaar" ||
+        normalized === "aadhar" ||
         normalized === "aadhaar card" ||
         normalized === "aadhaar_card"
     ) {
@@ -590,6 +895,7 @@ function normalizeDocumentType(type) {
 
 
     if (
+        normalized === "pan" ||
         normalized === "pan card" ||
         normalized === "pan_card"
     ) {
@@ -606,8 +912,32 @@ function normalizeDocumentType(type) {
     }
 
 
+    if (
+        normalized === "voter id" ||
+        normalized === "voter_id" ||
+        normalized === "voter-id" ||
+        normalized === "epic"
+    ) {
+
+        return "voter_id";
+    }
+
+
+    if (
+        normalized === "driving licence" ||
+        normalized === "driving license" ||
+        normalized === "driving_license" ||
+        normalized === "driving-license" ||
+        normalized === "license"
+    ) {
+
+        return "driving_license";
+    }
+
+
     return normalized;
 }
+
 
 /* =========================================================
    DOCUMENT DISPLAY NAME
@@ -645,11 +975,13 @@ function getDocumentDisplayName(
     );
 }
 
+
 /* =========================================================
-   RENDER FIELDS
+   RENDER DOCUMENT FIELDS
    ========================================================= */
 
-function renderFields(
+function renderDocumentFields(
+    resultGrid,
     documentType,
     fields
 ) {
@@ -659,55 +991,101 @@ function renderFields(
     }
 
 
-    resultGrid.innerHTML = "";
+    const shownFields =
+        new Set([
+            "document_type"
+        ]);
 
 
-    /* -----------------------------------------------------
-       ALWAYS SHOW DOCUMENT TYPE
-       ----------------------------------------------------- */
+    const add =
+        (
+            label,
+            key,
+            ...fallbackKeys
+        ) => {
 
-    addResultField(
-        "DOCUMENT TYPE",
-        getDocumentDisplayName(
-            documentType
-        )
-    );
+            const keys = [
+                key,
+                ...fallbackKeys
+            ];
+
+
+            let value = null;
+
+
+            for (
+                const currentKey
+                of keys
+            ) {
+
+                if (
+                    fields[currentKey] !==
+                        undefined &&
+                    fields[currentKey] !==
+                        null &&
+                    fields[currentKey] !==
+                        ""
+                ) {
+
+                    value =
+                        fields[currentKey];
+
+                    shownFields.add(
+                        currentKey
+                    );
+
+                    break;
+                }
+            }
+
+
+            addResultField(
+                resultGrid,
+                label,
+                value
+            );
+        };
 
 
     /* =====================================================
        AADHAAR
        ===================================================== */
 
-    if (documentType === "aadhaar") {
+    if (
+        documentType ===
+        "aadhaar"
+    ) {
 
-        addResultField(
+        add(
             "FULL NAME",
-            fields.name
+            "name"
         );
 
-        addResultField(
+        add(
             "AADHAAR NUMBER",
-            fields.aadhaar_number
+            "aadhaar_number"
         );
 
-        addResultField(
+        add(
             "DATE OF BIRTH",
-            fields.dob
+            "dob",
+            "date_of_birth"
         );
 
-        addResultField(
+        add(
             "GENDER",
-            fields.gender
+            "gender",
+            "sex"
         );
 
-        addResultField(
+        add(
             "PIN CODE",
-            fields.pin_code
+            "pin_code"
         );
 
-        addResultField(
+        add(
             "ADDRESS",
-            fields.address
+            "address"
         );
 
         return;
@@ -718,26 +1096,30 @@ function renderFields(
        PAN
        ===================================================== */
 
-    if (documentType === "pan") {
+    if (
+        documentType ===
+        "pan"
+    ) {
 
-        addResultField(
+        add(
             "FULL NAME",
-            fields.name
+            "name"
         );
 
-        addResultField(
+        add(
             "PAN NUMBER",
-            fields.pan_number
+            "pan_number"
         );
 
-        addResultField(
+        add(
             "FATHER NAME",
-            fields.father_name
+            "father_name"
         );
 
-        addResultField(
+        add(
             "DATE OF BIRTH",
-            fields.dob
+            "dob",
+            "date_of_birth"
         );
 
         return;
@@ -748,63 +1130,67 @@ function renderFields(
        PASSPORT
        ===================================================== */
 
-    if (documentType === "passport") {
+    if (
+        documentType ===
+        "passport"
+    ) {
 
-        addResultField(
+        add(
             "PASSPORT NUMBER",
-            fields.passport_number
+            "passport_number"
         );
 
-        addResultField(
+        add(
             "SURNAME",
-            fields.surname
+            "surname"
         );
 
-        addResultField(
+        add(
             "GIVEN NAME",
-            fields.given_name
+            "given_names",
+            "given_name"
         );
 
-        addResultField(
+        add(
             "FULL NAME",
-            fields.name
+            "name"
         );
 
-        addResultField(
+        add(
             "NATIONALITY",
-            fields.nationality
+            "nationality"
         );
 
-        addResultField(
+        add(
             "DATE OF BIRTH",
-            fields.dob ||
-            fields.date_of_birth
+            "dob",
+            "date_of_birth"
         );
 
-        addResultField(
+        add(
             "SEX",
-            fields.sex ||
-            fields.gender
+            "sex",
+            "gender"
         );
 
-        addResultField(
+        add(
             "PLACE OF BIRTH",
-            fields.place_of_birth
+            "place_of_birth"
         );
 
-        addResultField(
+        add(
             "PLACE OF ISSUE",
-            fields.place_of_issue
+            "place_of_issue"
         );
 
-        addResultField(
+        add(
             "DATE OF ISSUE",
-            fields.date_of_issue
+            "date_of_issue"
         );
 
-        addResultField(
+        add(
             "DATE OF EXPIRY",
-            fields.date_of_expiry
+            "date_of_expiry"
         );
 
         return;
@@ -815,33 +1201,37 @@ function renderFields(
        VOTER ID
        ===================================================== */
 
-    if (documentType === "voter_id") {
+    if (
+        documentType ===
+        "voter_id"
+    ) {
 
-        addResultField(
+        add(
             "FULL NAME",
-            fields.name
+            "name"
         );
 
-        addResultField(
+        add(
             "VOTER ID",
-            fields.voter_id ||
-            fields.epic_number
+            "voter_id",
+            "epic_number"
         );
 
-        addResultField(
+        add(
             "DATE OF BIRTH",
-            fields.dob
+            "dob",
+            "date_of_birth"
         );
 
-        addResultField(
+        add(
             "GENDER",
-            fields.gender ||
-            fields.sex
+            "gender",
+            "sex"
         );
 
-        addResultField(
+        add(
             "ADDRESS",
-            fields.address
+            "address"
         );
 
         return;
@@ -857,50 +1247,48 @@ function renderFields(
         "driving_license"
     ) {
 
-        addResultField(
+        add(
             "FULL NAME",
-            fields.name
+            "name"
         );
 
-        addResultField(
+        add(
             "LICENCE NUMBER",
-            fields.licence_number ||
-            fields.license_number
+            "licence_number",
+            "license_number"
         );
 
-        addResultField(
+        add(
             "DATE OF BIRTH",
-            fields.date_of_birth ||
-            fields.dob
+            "date_of_birth",
+            "dob"
         );
 
-        addResultField(
+        add(
             "ISSUE DATE",
-            fields.issue_date ||
-            fields.date_of_issue
+            "issue_date",
+            "date_of_issue"
         );
 
-        addResultField(
+        add(
             "EXPIRY DATE",
-            fields.expiry_date ||
-            fields.date_of_expiry
+            "expiry_date",
+            "date_of_expiry"
         );
 
-        addResultField(
+        add(
             "BLOOD GROUP",
-            fields.blood_group
+            "blood_group"
         );
 
-        addResultField(
+        add(
             "VEHICLE CLASSES",
-            formatVehicleClasses(
-                fields.vehicle_classes
-            )
+            "vehicle_classes"
         );
 
-        addResultField(
+        add(
             "ADDRESS",
-            fields.address
+            "address"
         );
 
         return;
@@ -908,59 +1296,48 @@ function renderFields(
 
 
     /* =====================================================
-       UNKNOWN DOCUMENT
+       GENERIC / UNKNOWN
        ===================================================== */
 
-    addResultField(
-        "DOCUMENT STATUS",
-        "Unsupported document type"
-    );
+    for (
+        const [key, value]
+        of Object.entries(fields)
+    ) {
+
+        if (
+            key === "document_type" ||
+            shownFields.has(key)
+        ) {
+            continue;
+        }
 
 
-    /* -----------------------------------------------------
-       GENERIC FALLBACK
-       ----------------------------------------------------- */
-
-    Object.entries(fields)
-        .forEach(([key, value]) => {
-
-            if (
-                key === "document_type" ||
-                value === null ||
-                value === undefined ||
-                value === ""
-            ) {
-                return;
-            }
+        if (
+            value === null ||
+            value === undefined ||
+            value === ""
+        ) {
+            continue;
+        }
 
 
-            const alreadyShown =
-                resultGrid.querySelector(
-                    `[data-field="${key}"]`
-                );
-
-
-            if (alreadyShown) {
-                return;
-            }
-
-
-            addResultField(
-                formatLabel(key),
-                formatValue(value),
-                key
-            );
-        });
+        addResultField(
+            resultGrid,
+            formatLabel(key),
+            value
+        );
+    }
 }
+
 
 /* =========================================================
    ADD RESULT FIELD
    ========================================================= */
 
 function addResultField(
+    resultGrid,
     label,
-    value,
-    fieldKey = ""
+    value
 ) {
 
     if (!resultGrid) {
@@ -969,31 +1346,27 @@ function addResultField(
 
 
     const field =
-        document.createElement("div");
-
+        document.createElement(
+            "div"
+        );
 
     field.className =
         "result-field";
 
 
-    if (fieldKey) {
-
-        field.dataset.field =
-            fieldKey;
-    }
-
-
     const labelElement =
-        document.createElement("label");
-
+        document.createElement(
+            "label"
+        );
 
     labelElement.textContent =
         label;
 
 
     const valueElement =
-        document.createElement("strong");
-
+        document.createElement(
+            "strong"
+        );
 
     valueElement.textContent =
         formatValue(value);
@@ -1007,11 +1380,11 @@ function addResultField(
         valueElement
     );
 
-
     resultGrid.appendChild(
         field
     );
 }
+
 
 /* =========================================================
    FORMAT VALUE
@@ -1035,12 +1408,17 @@ function formatValue(value) {
             return "NOT DETECTED";
         }
 
-        return value.join(", ");
+        return value
+            .map(item =>
+                formatValue(item)
+            )
+            .join(", ");
     }
 
 
     if (
-        typeof value === "object"
+        typeof value ===
+        "object"
     ) {
 
         try {
@@ -1059,16 +1437,18 @@ function formatValue(value) {
     return String(value);
 }
 
+
 /* =========================================================
    FORMAT LABEL
    ========================================================= */
 
-function formatLabel(
-    key
-) {
+function formatLabel(key) {
 
     return String(key)
-        .replace(/_/g, " ")
+        .replace(
+            /_/g,
+            " "
+        )
         .replace(
             /\b\w/g,
             character =>
@@ -1076,39 +1456,33 @@ function formatLabel(
         );
 }
 
+
 /* =========================================================
-   FORMAT VEHICLE CLASSES
+   NORMALIZE OBJECT
    ========================================================= */
 
-function formatVehicleClasses(
-    classes
-) {
+function normalizeObject(value) {
 
-    if (!classes) {
-        return "NOT DETECTED";
+    if (
+        !value ||
+        typeof value !==
+            "object"
+    ) {
+
+        return {};
     }
 
 
-    if (!Array.isArray(classes)) {
-
-        return String(classes);
-    }
-
-
-    if (classes.length === 0) {
-
-        return "NOT DETECTED";
-    }
-
-
-    return classes.join(", ");
+    return value;
 }
 
+
 /* =========================================================
-   VALIDATION ERRORS
+   VALIDATION MESSAGES
    ========================================================= */
 
-function renderValidationErrors(
+function renderValidationMessages(
+    resultErrors,
     validation
 ) {
 
@@ -1117,7 +1491,8 @@ function renderValidationErrors(
     }
 
 
-    resultErrors.innerHTML = "";
+    resultErrors.innerHTML =
+        "";
 
 
     const errors =
@@ -1128,7 +1503,18 @@ function renderValidationErrors(
             : [];
 
 
-    if (errors.length === 0) {
+    const warnings =
+        Array.isArray(
+            validation.warnings
+        )
+            ? validation.warnings
+            : [];
+
+
+    if (
+        errors.length === 0 &&
+        warnings.length === 0
+    ) {
 
         resultErrors.classList.add(
             "hidden"
@@ -1144,11 +1530,14 @@ function renderValidationErrors(
 
 
     const heading =
-        document.createElement("strong");
-
+        document.createElement(
+            "strong"
+        );
 
     heading.textContent =
-        "VALIDATION NOTES";
+        errors.length > 0
+            ? "VALIDATION NOTES"
+            : "VALIDATION WARNINGS";
 
 
     resultErrors.appendChild(
@@ -1157,33 +1546,55 @@ function renderValidationErrors(
 
 
     const list =
-        document.createElement("ul");
-
+        document.createElement(
+            "ul"
+        );
 
     list.style.marginTop =
         "12px";
 
 
-    errors.forEach(error => {
+    errors.forEach(
+        error => {
 
-        const item =
-            document.createElement("li");
+            const item =
+                document.createElement(
+                    "li"
+                );
+
+            item.textContent =
+                String(error);
+
+            list.appendChild(
+                item
+            );
+        }
+    );
 
 
-        item.textContent =
-            String(error);
+    warnings.forEach(
+        warning => {
 
+            const item =
+                document.createElement(
+                    "li"
+                );
 
-        list.appendChild(
-            item
-        );
-    });
+            item.textContent =
+                String(warning);
+
+            list.appendChild(
+                item
+            );
+        }
+    );
 
 
     resultErrors.appendChild(
         list
     );
 }
+
 
 /* =========================================================
    ERROR RESULT
@@ -1198,69 +1609,61 @@ function renderErrorResult(
     }
 
 
-    if (detectedDocumentElement) {
-
-        detectedDocumentElement.textContent =
-            "PROCESSING ERROR";
-    }
+    const elements =
+        getResultElements();
 
 
-    if (detectionConfidenceElement) {
+    if (elements.resultStatus) {
 
-        detectionConfidenceElement.textContent =
-            "N/A";
-    }
-
-
-    if (resultStatus) {
-
-        resultStatus.classList.remove(
+        elements.resultStatus.classList.remove(
             "valid"
         );
 
-        resultStatus.classList.add(
+        elements.resultStatus.classList.add(
             "invalid"
         );
 
-        resultStatus.textContent =
+        elements.resultStatus.textContent =
             "ERROR";
     }
 
 
-    if (resultGrid) {
+    if (elements.resultGrid) {
 
-        resultGrid.innerHTML = "";
+        elements.resultGrid.innerHTML =
+            "";
 
         addResultField(
+            elements.resultGrid,
             "STATUS",
             "DOCUMENT COULD NOT BE PROCESSED"
         );
     }
 
 
-    if (resultErrors) {
+    if (elements.resultErrors) {
 
-        resultErrors.classList.remove(
+        elements.resultErrors.classList.remove(
             "hidden"
         );
 
-
-        resultErrors.innerHTML = "";
+        elements.resultErrors.innerHTML =
+            "";
 
 
         const errorBox =
-            document.createElement("div");
-
+            document.createElement(
+                "div"
+            );
 
         errorBox.className =
             "error-result";
 
-
         errorBox.textContent =
-            message;
+            String(message);
 
 
-        resultErrors.appendChild(
+        elements.resultErrors.appendChild(
             errorBox
         );
     }
@@ -1281,39 +1684,68 @@ function renderErrorResult(
     }, 100);
 }
 
+
 /* =========================================================
-   START VERIFICATION LINK
+   NAVIGATION
    ========================================================= */
 
-document
-    .querySelectorAll(
-        'a[href="#upload"]'
-    )
-    .forEach(link => {
+function initializeNavigation() {
 
-        link.addEventListener(
-            "click",
-            () => {
+    document
+        .querySelectorAll(
+            'a[href="#upload"]'
+        )
+        .forEach(
+            link => {
 
-                setTimeout(() => {
+                link.addEventListener(
+                    "click",
+                    () => {
 
-                    if (uploadPanel) {
+                        setTimeout(
+                            () => {
 
-                        uploadPanel.scrollIntoView({
-                            behavior: "smooth",
-                            block: "center"
-                        });
+                                if (
+                                    uploadPanel
+                                ) {
+
+                                    uploadPanel.scrollIntoView({
+                                        behavior: "smooth",
+                                        block: "center"
+                                    });
+                                }
+
+                            },
+                            100
+                        );
                     }
-
-                }, 100);
+                );
             }
         );
-    });
+}
+
 
 /* =========================================================
-   SECURITY
+   GLOBAL ERROR PROTECTION
+   ========================================================= */
+
+window.addEventListener(
+    "error",
+    event => {
+
+        console.error(
+            "VERIFYAI frontend error:",
+            event.error ||
+            event.message
+        );
+    }
+);
+
+
+/* =========================================================
+   END
    ========================================================= */
 
 console.log(
-    "VERIFYAI frontend initialized."
+    "VERIFYAI frontend ready."
 );
