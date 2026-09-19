@@ -158,22 +158,29 @@ def extract_driving_license_fields(
     # ---------------------------------------------------------
     # Issue date
     # ---------------------------------------------------------
-
+    # Common Indian DL labels: DOI, DATE OF ISSUE, ISSUE DATE, ISSUED ON,
+    # ISSUE, VALID FROM. OCR variants: D0I, D01, 00I, missing colon, dots
+    # instead of slashes. Guarded: label must be a standalone token so
+    # "PLACE OF ISSUE: NEW DELHI" (no date) does not false-match, and
+    # "RE-ISSUE" is excluded via lookbehind.
     issue_date = _find_first(
         text,
         [
-            r"(?:VALID\s*FROM|ISSUED\s*ON|DATE\s*OF\s*ISSUE|ISSUE\s*DATE)[\s:.-]*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})",
+            r"(?<![A-Z-])(?:D[O0][1Il]|DATE\s*OF\s*ISSUE|ISSUED?\s*ON|ISSUE\s*DATE|VALID\s*FROM)[\s:.\-]*(\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4})",
+            r"(?<![A-Z-])ISSUE(?!\s*OF)(?![A-Z])[\s:.\-]*(\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4})",
         ],
     )
 
     # ---------------------------------------------------------
     # Expiry date
     # ---------------------------------------------------------
-
+    # Labels: VALID TILL / VALID UNTIL / VALID UPTO / VALID UP TO / VALID
+    # TO / VALIDITY / VALID UPTO ... (NT) suffix tolerated. OCR: T1LL,
+    # UNT1L, UPT0. Avoid matching a bare "VALID" without a qualifier.
     expiry_date = _find_first(
         text,
         [
-            r"(?:VALID\s*(?:UPTO|UNTIL|TO)|VALIDITY|DATE\s*OF\s*EXPIRY|EXPIRY\s*DATE)[\s:.-]*(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})",
+            r"(?:VALID\s*(?:T[I1]LL|UNT[I1]L|UP\s*TO|UPTO|TO)|VALIDITY|DATE\s*OF\s*EXPIRY|EXPIRY\s*DATE)[\s:.\-]*(\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4})",
         ],
     )
 

@@ -1,3 +1,11 @@
+"""Legacy standalone Aadhaar field checks.
+
+DEPRECATED: the production pipeline uses
+``app.services.document_service.validate_aadhaar_fields`` (structural
+validation with Verhoeff-checksum warning + always ``not_verified``
+authenticity). This module is kept only for backward compatibility and
+must not be extended — do not add a second diverging implementation.
+"""
 from datetime import datetime
 
 

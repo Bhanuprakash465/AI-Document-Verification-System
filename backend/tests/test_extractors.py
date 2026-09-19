@@ -208,6 +208,52 @@ def test_dl_number_spaces_stripped():
     assert fields["licence_number"] == "MH1220110001234"
 
 
+DL_ISSUE_EXPIRY_CASES = [
+    # Reported production case: DOI + "Valid Till ... (NT)".
+    (
+        ["Driving Licence", "DOI: 24-01-2007", "Valid Till 23-01-2027 (NT)"],
+        ("24-01-2007", "23-01-2027"),
+    ),
+    (
+        ["Driving Licence", "DATE OF ISSUE 24.01.2007", "VALID UNTIL 23.01.2027"],
+        ("24.01.2007", "23.01.2027"),
+    ),
+    (
+        ["Driving Licence", "ISSUED ON 24/01/2007", "VALID UPTO 23/01/2027"],
+        ("24/01/2007", "23/01/2027"),
+    ),
+    (
+        ["Driving Licence", "ISSUE DATE: 24-01-2007", "VALID TO: 23-01-2027"],
+        ("24-01-2007", "23-01-2027"),
+    ),
+    (
+        ["Driving Licence", "VALID FROM 24-01-2007", "VALIDITY 23-01-2027"],
+        ("24-01-2007", "23-01-2027"),
+    ),
+    (
+        ["Driving Licence", "D0I: 24-01-2007", "VALID T1LL 23-01-2027"],
+        ("24-01-2007", "23-01-2027"),
+    ),
+]
+
+
+def test_dl_issue_expiry_label_variants():
+    for lines, (issue, expiry) in DL_ISSUE_EXPIRY_CASES:
+        fields = extract_driving_license_fields(lines)
+        assert fields["issue_date"] == issue, lines
+        assert fields["expiry_date"] == expiry, lines
+
+
+def test_dl_place_of_issue_is_not_issue_date():
+    # "PLACE OF ISSUE: NEW DELHI" carries no date and must not populate
+    # issue_date.
+    fields = extract_driving_license_fields(
+        ["Driving Licence", "PLACE OF ISSUE: NEW DELHI"]
+    )
+    assert fields["issue_date"] is None
+    assert fields["expiry_date"] is None
+
+
 # =========================================================
 # VOTER ID
 # =========================================================
@@ -233,6 +279,43 @@ def test_voter_extracts_epic():
 
 def test_voter_extracts_name():
     fields = extract_voter_id_fields(VOTER_LINES)
+    assert fields.get("name") == "RAHUL SHARMA"
+
+
+def test_voter_multiline_name_continues():
+    # Surname wrapped onto the next line is merged.
+    fields = extract_voter_id_fields(
+        [
+            "Election Commission of India",
+            "Name: RAHUL",
+            "SHARMA",
+            "ABC1234567",
+        ]
+    )
+    assert fields.get("name") == "RAHUL SHARMA"
+
+
+def test_voter_name_does_not_swallow_epic():
+    # An identifier-looking next line must NOT be appended to the name.
+    fields = extract_voter_id_fields(
+        [
+            "Election Commission of India",
+            "Name: RAHUL SHARMA",
+            "ABC1234567",
+        ]
+    )
+    assert fields.get("name") == "RAHUL SHARMA"
+
+
+def test_voter_name_does_not_swallow_garbage():
+    fields = extract_voter_id_fields(
+        [
+            "Election Commission of India",
+            "Name: RAHUL SHARMA",
+            "RANDOM GARBAGE 123",
+            "ABC1234567",
+        ]
+    )
     assert fields.get("name") == "RAHUL SHARMA"
 
 

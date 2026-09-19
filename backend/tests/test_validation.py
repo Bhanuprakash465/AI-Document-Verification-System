@@ -40,8 +40,28 @@ def test_aadhaar_valid():
         0.9,
     )
     assert result["valid"] is True
-    assert result["status"] == "verified"
+    assert result["status"] == "validated"
     assert result["errors"] == []
+    # Structural validity never implies government authenticity.
+    assert result["authenticity"] == "not_verified"
+
+
+def test_aadhaar_checksum_warning_is_not_authenticity():
+    # 1234... passes Verhoeff; a random 12-digit number that fails the
+    # checksum stays structurally "failed"-free only if format holds —
+    # here we check the checksum signal is a warning, not authenticity.
+    result = validate_aadhaar_fields(
+        {
+            "aadhaar_number": "1234 5678 9013",
+            "name": "RAHUL SHARMA",
+            "dob": "14/02/1995",
+            "gender": "MALE",
+        },
+        0.9,
+    )
+    assert result["authenticity"] == "not_verified"
+    assert result["checks"].get("aadhaar_checksum") is False
+    assert any("checksum" in w.lower() for w in result["warnings"])
 
 
 def test_aadhaar_missing_number():
@@ -87,7 +107,7 @@ def test_pan_valid():
         0.9,
     )
     assert result["valid"] is True
-    assert result["status"] == "verified"
+    assert result["status"] == "validated"
 
 
 def test_pan_invalid_format():
@@ -117,7 +137,7 @@ def test_passport_valid():
         0.9,
     )
     assert result["valid"] is True
-    assert result["status"] == "verified"
+    assert result["status"] == "validated"
 
 
 def test_passport_expired_warns():
@@ -168,6 +188,8 @@ def test_voter_valid():
         0.9,
     )
     assert result["valid"] is True
+    assert result["status"] == "validated"
+    assert result["authenticity"] == "not_verified"
 
 
 def test_voter_invalid_epic():
@@ -196,6 +218,21 @@ def test_dl_valid():
         0.9,
     )
     assert result["valid"] is True
+    assert result["status"] == "validated"
+    assert result["authenticity"] == "not_verified"
+
+
+def test_dl_expiry_before_issue_fails():
+    result = validate_driving_license(
+        {
+            "license_number": "TS0120190001234",
+            "name": "RAHUL SHARMA",
+            "issue_date": "31/05/2039",
+            "expiry_date": "01/06/2019",
+        },
+        0.9,
+    )
+    assert result["valid"] is False
 
 
 def test_dl_missing_number():

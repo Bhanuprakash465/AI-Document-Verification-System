@@ -1,19 +1,19 @@
 """
 API integration tests.
 
-These tests run the REAL pipeline (preprocess -> OCR ->
-classification -> extraction -> validation) against REAL sample
-documents found in backend/uploads/. They are slower than unit
-tests because DocTR model weights are loaded on first use.
+Most tests below use synthetic in-memory uploads (bytes constructed in
+the test itself) so they run on a fresh public clone with no private
+files. Tests that need REAL local sample documents in
+``backend/uploads/`` are marked and skipped gracefully when those files
+are absent — the public repository intentionally contains only
+``backend/uploads/.gitkeep`` (never commit real identity documents).
 
-Real sample files used (skipped gracefully if missing):
+To run the real-document E2E tests locally, place your own authorized
+samples in ``backend/uploads/`` (gitignored) with the expected names:
+
   * Aadhaar : uploads/adhar card.jpeg.jpg
   * PAN     : uploads/26d6e93931ee41cf99b291c59887a8fe_pan (1).pdf
   * Passport: uploads/25c862700038402a9c38a5df8099f339_indianpp.jpg
-
-Driving Licence and Voter ID have no real samples in the repo;
-those document types are covered by the synthetic-text unit tests
-in test_classifier.py / test_extractors.py / test_validation.py.
 """
 
 import sys
@@ -104,7 +104,7 @@ def test_real_aadhaar_pipeline():
 
     # Validation must have run and produced a status.
     assert body["validation"]["status"] in (
-        "verified",
+        "validated",
         "failed",
     )
 
@@ -133,7 +133,7 @@ def test_real_pan_pipeline():
     assert body["document_type"] == "pan"
     assert body["fields"]["pan_number"]
     assert body["validation"]["status"] in (
-        "verified",
+        "validated",
         "failed",
     )
 
@@ -162,9 +162,129 @@ def test_real_passport_pipeline():
     assert body["document_type"] == "passport"
     assert body["fields"]["passport_number"]
     assert body["validation"]["status"] in (
-        "verified",
+        "validated",
         "failed",
     )
+
+
+# =========================================================
+# SYNTHETIC API TESTS (run on any fresh clone, no real docs)
+# =========================================================
+
+import io
+
+from PIL import Image, ImageDraw
+
+
+def _make_test_image_bytes(fmt="PNG", size=(900, 900)):
+    image = Image.new("RGB", size, color="white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle([60, 60, size[0] - 60, size[1] - 60], outline="black", width=4)
+    draw.text((120, 120), "SYNTHETIC TEST DOCUMENT", fill="black")
+    draw.text((120, 200), "No real personal data.", fill="black")
+    buffer = io.BytesIO()
+    image.save(buffer, format=fmt)
+    return buffer.getvalue()
+
+
+def test_health_endpoint():
+    response = client.get("/health")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "healthy"
+    assert body["database"] in ("ready", "unavailable")
+
+
+def test_home_lists_health():
+    response = client.get("/")
+    assert response.status_code == 200
+    assert response.json()["health"] == "/health"
+
+
+def test_oversized_upload_rejected_and_cleaned():
+    from app.services.document_service import MAX_FILE_SIZE, UPLOAD_FOLDER
+
+    before = set(p.name for p in UPLOAD_FOLDER.glob("*") if p.is_file())
+    big = b"x" * (MAX_FILE_SIZE + 1024)
+    response = client.post(
+        "/verify-document",
+        files={"file": ("big.png", big, "image/png")},
+    )
+    assert response.status_code == 413
+    after = set(p.name for p in UPLOAD_FOLDER.glob("*") if p.is_file())
+    # No partial file may remain (other than pre-existing local samples).
+    assert after <= before
+
+
+def test_at_limit_upload_size_accepted_by_stream_writer():
+    # Direct unit check of the bounded streaming writer (no OCR involved).
+    import tempfile
+
+    from app.services.document_service import MAX_FILE_SIZE, _save_upload_bounded
+
+    class _FakeUpload:
+        def __init__(self, payload: bytes):
+            self.file = io.BytesIO(payload)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        from pathlib import Path as _Path
+
+        target = _Path(tmp) / "at_limit.bin"
+        payload = b"y" * MAX_FILE_SIZE
+        written = _save_upload_bounded(_FakeUpload(payload), target)
+        assert written == MAX_FILE_SIZE
+        assert target.stat().st_size == MAX_FILE_SIZE
+        over = _FakeUpload(b"z" * (MAX_FILE_SIZE + 1))
+        try:
+            _save_upload_bounded(over, _Path(tmp) / "over.bin")
+            raise AssertionError("expected HTTP 413")
+        except Exception as exc:
+            assert getattr(exc, "status_code", None) == 413
+            assert not (_Path(tmp) / "over.bin").exists()
+
+
+def test_pdf_signature_rejected():
+    response = client.post(
+        "/verify-document",
+        files={"file": ("fake.pdf", b"not a pdf at all", "application/pdf")},
+    )
+    assert response.status_code == 400
+
+
+def test_exe_content_masquerading_as_image_rejected():
+    response = client.post(
+        "/verify-document",
+        files={"file": ("evil.png", b"MZ" + b"\x00" * 100, "image/png")},
+    )
+    assert response.status_code == 400
+
+
+def test_corrupt_image_rejected_cleanly():
+    response = client.post(
+        "/verify-document",
+        files={
+            "file": ("broken.png", b"\x89PNG\r\n\x1a\n" + b"\x00" * 64, "image/png")
+        },
+    )
+    # Must be a clean 4xx, never a 500 with a stack trace.
+    assert response.status_code in (400, 413, 422, 503)
+
+
+def test_validation_status_never_claims_authenticity():
+    # Synthetic image will OCR-fail or classify unknown, but whatever the
+    # branch, authenticity must stay "not_verified".
+    payload = _make_test_image_bytes()
+    response = client.post(
+        "/verify-document",
+        files={"file": ("synthetic.png", payload, "image/png")},
+    )
+    assert response.status_code in (200, 400, 503)
+    if response.status_code == 200:
+        body = response.json()
+        assert body["validation"]["authenticity"] == "not_verified"
+        # Temp files are cleaned up by default; no server paths leaked.
+        assert body["saved_to"] is None
+        assert body["processed_file"] is None
 
 
 # =========================================================

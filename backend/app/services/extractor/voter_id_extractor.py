@@ -138,6 +138,44 @@ def _looks_like_name(text: str) -> bool:
     return True
 
 
+def _looks_like_name_fragment(text: str) -> bool:
+    """Like :func:`_looks_like_name` but for single-word continuations.
+
+    ``clean_name`` requires >= 2 words, so a wrapped surname ("SHARMA")
+    alone would never pass. A fragment is accepted when it is alphabetic
+    (>= 2 chars), not a boilerplate label, and not dominated by
+    single-character tokens.
+    """
+    cleaned = clean_line(text)
+    if not cleaned:
+        return False
+    alpha = re.sub(r"[^A-Za-z.\s]", " ", cleaned)
+    alpha = clean_line(alpha)
+    words = alpha.split()
+    # Must contain real alphabetic content (>= 2 letters); a bare EPIC
+    # number or date leaves nothing after stripping digits/punctuation.
+    letters_only = re.sub(r"[^A-Za-z]", "", alpha)
+    if len(letters_only) < 2:
+        return False
+    if not words or any(len(word) < 2 for word in words):
+        # Single letters / fragments are OCR noise, not a surname.
+        if len(words) != 1 or len(words[0]) < 2:
+            return False
+    if len(words) > 8:
+        return False
+    # EPIC/identifier-looking lines are never a name continuation, even
+    # though their letter runs ("ABC" in "ABC1234567") look alphabetic.
+    if EPIC_PATTERN.search(cleaned):
+        return False
+    if DATE_PATTERN.search(cleaned):
+        return False
+    upper = alpha.upper()
+    for value in _NAME_REJECTED:
+        if value in upper:
+            return False
+    return True
+
+
 def _extract_name_from_label(
     lines: list[str],
     label_index: int,
@@ -179,9 +217,11 @@ def _extract_name_from_label(
                 parts = _split_camel_case(next_line)
 
     # -------------------------------------------------
-    # Multi-line continuation: if the name value is a single
-    # word (camelCase) and the next line is a single alphabetic
-    # word, the next line is likely a surname continuation.
+    # Multi-line continuation: a *long single-token* value (camelCase
+    # like "AbhishekKumarsingh", len > 6) plus a single-word next line
+    # is likely a wrapped surname. Short single tokens ("RAHUL") do
+    # NOT trigger this branch — a bare first name plus an unrelated
+    # next line must not be concatenated.
     # -------------------------------------------------
     if (
         len(parts) == 1
@@ -220,7 +260,11 @@ def _extract_name_from_label(
                 parts.append(next_word)
 
     # Also handle the case where the same-line value already has
-    # multiple words but the next line is a continuation.
+    # multiple words but the next line is a continuation (e.g. first
+    # name on the label line, surname wrapped below). The next line is
+    # appended only when it looks like a name fragment: alphabetic,
+    # non-boilerplate, and (for single-word fragments) not rejected as
+    # a structural label. Unrelated OCR text must be ignored.
     elif (
         len(parts) >= 2
         and label_index + 1 < len(lines)
@@ -232,7 +276,7 @@ def _extract_name_from_label(
             len(next_parts) == 1
             and next_parts[0].isalpha()
             and len(next_parts[0]) >= 2
-            and not _looks_like_name(next_line)
+            and _looks_like_name_fragment(next_line)
             # Only add if the next word isn't already a suffix
             # of the last part (avoid duplicates from OCR).
             and not parts[-1].lower().endswith(
@@ -392,6 +436,29 @@ def extract_voter_id_fields(ocr_text: list[str]) -> dict:
             if name:
                 fields["name"] = name
                 break
+
+            # Name label present but value is a bare first name on its own
+            # line with the surname wrapped below ("Name: RAHUL" / "SHARMA").
+            # Only merge when the next line is a plausible name fragment.
+            value = re.sub(
+                r"(?i).*?\bname\b\s*[:\-]?\s*",
+                "",
+                line,
+            ).strip()
+            value = re.sub(r"^[.\-,:;\s]+", "", value).strip()
+            if (
+                value
+                and _split_camel_case(value)
+                and len(_split_camel_case(value)) == 1
+                and index + 1 < len(lines)
+                and _looks_like_name_fragment(lines[index + 1])
+                and ":" not in lines[index + 1]
+            ):
+                fragment = clean_line(lines[index + 1])
+                combined = clean_name(f"{value} {fragment}")
+                if combined:
+                    fields["name"] = combined
+                    break
 
     # =====================================================
     # FATHER / HUSBAND NAME

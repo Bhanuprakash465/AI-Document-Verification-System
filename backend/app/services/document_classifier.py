@@ -1,13 +1,11 @@
 """
 Document classifier for the AI Document Verification System.
 
-Classification is based on multiple weighted, document-specific
-signals:
-
-  * strong keywords  (highly characteristic phrases)
-  * medium keywords  (supporting terminology)
-  * identifier patterns (Aadhaar number, PAN, EPIC, passport no.)
-  * passport MRZ
+Rule-based multi-signal document classification (NOT a trained ML
+classifier model): each document type accumulates weighted evidence
+from strong/medium keywords, identifier patterns and (for passports)
+MRZ lines. OCR comes from DocTR (AI/ML-based OCR); classification
+itself is deterministic rules over that OCR text.
 
 A lone identifier pattern is NOT enough on its own to classify a
 document, because e.g. a random 12-digit run of digits is not proof
@@ -15,6 +13,10 @@ of an Aadhaar card. Identifier patterns only count as *supporting*
 evidence once at least one keyword signal is present. When the best
 score is too low to be trustworthy the classifier returns
 ``document_type = "unknown"`` instead of guessing.
+
+Confidence note: the returned ``confidence`` is a heuristic score
+(``min(0.99, 0.50 + best_score * 0.045)`` with an ambiguity penalty),
+NOT a calibrated statistical probability.
 """
 
 import re
@@ -360,7 +362,8 @@ def classify_document(
     Classify OCR text into a document type.
 
     Returns a dict with:
-      document_type, display_name, confidence, signals, scores
+      document_type, display_name, confidence (heuristic, not a
+      calibrated probability), signals, scores
     """
 
     if isinstance(ocr_text, list):

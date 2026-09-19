@@ -102,6 +102,11 @@ class DocumentValidationResponse(BaseModel):
 
     valid: bool = False
 
+    # NOTE: "validated" means the extracted fields passed
+    # structural/consistency checks only. It does NOT mean the document
+    # is genuine or government-issued. Authenticity is tracked separately
+    # and stays "not_verified" (no authenticity verification exists).
+
     errors: List[str] = Field(
         default_factory=list
     )
@@ -115,6 +120,14 @@ class DocumentValidationResponse(BaseModel):
     message: Optional[str] = None
 
     confidence: Optional[float] = None
+    """Heuristic classification confidence in [0, 1].
+
+    This is NOT a calibrated statistical probability — it is a
+    monotonic function of the rule-based classifier score
+    (``0.50 + best_score * 0.045``, capped at 0.99, with an ambiguity
+    penalty). Higher means more matching signals, not a measured
+    likelihood.
+    """
 
     # Important:
     # This project does NOT currently prove government authenticity.
@@ -136,7 +149,11 @@ class DocumentVerifyResponse(BaseModel):
     # otherwise perfectly valid upload.
     content_type: Optional[str] = None
 
-    saved_to: str
+    # File-system paths are no longer retained by default: uploads and
+    # processed images are deleted after processing (see
+    # RETAIN_UPLOADED_FILES). These fields stay Optional for backward
+    # compatibility and are None unless retention is explicitly enabled.
+    saved_to: Optional[str] = None
 
     processed_file: Optional[str] = None
 
@@ -144,6 +161,8 @@ class DocumentVerifyResponse(BaseModel):
 
     # Top-level classification convenience fields so API consumers
     # (and the frontend) do not have to reach into nested objects.
+    # NOTE: this confidence is a heuristic rule-based score, not a
+    # calibrated probability (see DocumentValidationResponse).
     display_name: Optional[str] = None
 
     confidence: Optional[float] = None

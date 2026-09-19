@@ -1,8 +1,9 @@
 from pathlib import Path
 from uuid import uuid4
 from datetime import datetime
+import logging
+import os
 import re
-import shutil
 import time
 
 from fastapi import HTTPException, UploadFile
@@ -44,6 +45,32 @@ UPLOAD_FOLDER = (
 )
 
 MAX_FILE_SIZE = 10 * 1024 * 1024
+
+# Maximum number of bytes read from the upload stream at a time. This
+# keeps arbitrarily large uploads bounded both on disk (enforced while
+# streaming) and in RAM (never read whole file at once).
+UPLOAD_CHUNK_SIZE = 64 * 1024
+
+# Maximum size (in pixels on the longest side) accepted for PDF raster
+# output. DocTR rasterises PDFs internally; very large pages can use a
+# lot of CPU/RAM, so cap rendered resolution and fail gracefully.
+PDF_RENDER_DPI = 150
+
+PDF_SIGNATURE = b"%PDF-"
+# Common raster magic bytes: JPEG, PNG, WEBP (RIFF....WEBP), BMP, TIFF.
+IMAGE_SIGNATURES = (
+    b"\xff\xd8\xff",
+    b"\x89PNG\r\n\x1a\n",
+    b"RIFF",
+    b"BM",
+    b"II*\x00",
+    b"MM\x00*",
+)
+
+# When True (default), uploaded originals and generated processed images
+# are deleted after the response payload is built. Set to "1" only for
+# short-lived local debugging; the API never requires file retention.
+RETAIN_UPLOADED_FILES = os.getenv("RETAIN_UPLOADED_FILES", "0") == "1"
 
 # Content-Type values browsers/clients commonly send for each
 # supported format. Kept broad on purpose - different browsers and
@@ -162,6 +189,50 @@ def parse_date(value: str):
     return None
 
 
+logger = logging.getLogger(__name__)
+
+
+# =========================================================
+# VERHOEFF CHECKSUM (Aadhaar)
+# =========================================================
+# Aadhaar numbers use the Verhoeff checksum. A checksum pass only proves
+# the number is *well-formed* — it does NOT prove the card is genuine or
+# government-issued. A checksum failure is therefore a warning, never a
+# claim about authenticity.
+
+
+_VERHOEFF_D = (
+    (0, 1, 2, 3, 4, 5, 6, 7, 8, 9),
+    (1, 2, 3, 4, 0, 6, 7, 8, 9, 5),
+    (2, 3, 4, 0, 1, 7, 8, 9, 5, 6),
+    (3, 4, 0, 1, 2, 8, 9, 5, 6, 7),
+    (4, 0, 1, 2, 3, 9, 5, 6, 7, 8),
+    (5, 9, 8, 7, 6, 0, 4, 3, 2, 1),
+    (6, 5, 9, 8, 7, 1, 0, 4, 3, 2),
+    (7, 6, 5, 9, 8, 2, 1, 0, 4, 3),
+    (8, 7, 6, 5, 9, 3, 2, 1, 0, 4),
+    (9, 8, 7, 6, 5, 4, 3, 2, 1, 0),
+)
+_VERHOEFF_P = (
+    (0, 1, 2, 3, 4, 5, 6, 7, 8, 9),
+    (1, 5, 7, 6, 2, 8, 3, 0, 9, 4),
+    (5, 8, 0, 3, 7, 9, 6, 1, 4, 2),
+    (8, 9, 1, 6, 0, 4, 3, 7, 2, 5),
+    (9, 4, 5, 3, 1, 2, 6, 8, 7, 0),
+    (4, 2, 8, 6, 5, 7, 3, 9, 0, 1),
+    (2, 7, 9, 3, 8, 0, 6, 4, 1, 5),
+    (7, 0, 4, 6, 9, 1, 3, 2, 5, 8),
+)
+
+
+def _verhoeff_checksum_ok(number: str) -> bool:
+    """Return True when *number* passes the Verhoeff checksum."""
+    checksum = 0
+    for position, char in enumerate(reversed(number)):
+        checksum = _VERHOEFF_D[checksum][_VERHOEFF_P[position % 8][int(char)]]
+    return checksum == 0
+
+
 def _relative_to_backend(path) -> str | None:
     """
     Convert an absolute server-side path into a path relative to the
@@ -206,7 +277,9 @@ def persist_document(
         record = Document(
             filename=filename,
             document_type=document_type,
-            extracted_text="\n".join(ocr_text or [])[:200000],
+            extracted_text="\n".join(ocr_text or [])[:5000],
+            # Only a short excerpt is stored for audit/debug; full OCR
+            # identity text is not retained in the database.
             verification_status=verification_status,
         )
 
@@ -230,8 +303,139 @@ def persist_document(
 
 
 # =========================================================
+# FILE HELPERS (bounded upload + content sniffing + cleanup)
+# =========================================================
+
+def _save_upload_bounded(file: UploadFile, destination: Path) -> int:
+    """Stream *file* to *destination* without exceeding MAX_FILE_SIZE.
+
+    Reads bounded chunks so an arbitrarily large upload is never loaded
+    fully into RAM, and enforces the cap while writing so an oversized
+    upload never consumes unbounded disk. On overflow the partial file
+    is removed and HTTP 413 is raised.
+    """
+    total = 0
+    try:
+        with open(destination, "wb") as handle:
+            while True:
+                chunk = file.file.read(UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_FILE_SIZE:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=(
+                            "File is too large. Maximum allowed size is "
+                            f"{MAX_FILE_SIZE // (1024 * 1024)} MB."
+                        ),
+                    )
+                handle.write(chunk)
+    except HTTPException:
+        # Remove the partial file directly here (not via _safe_delete,
+        # which is intentionally restricted to the uploads directory, so
+        # unit tests using temp dirs still get cleanup).
+        try:
+            Path(destination).unlink(missing_ok=True)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("[CLEANUP] Could not delete %s: %r", destination, exc)
+        raise
+    except Exception as exc:
+        try:
+            Path(destination).unlink(missing_ok=True)
+        except Exception:  # pragma: no cover - defensive
+            pass
+        raise HTTPException(
+            status_code=400,
+            detail="The uploaded file could not be saved. Please try again.",
+        ) from exc
+    return total
+
+
+def _peek_magic(path: Path, num_bytes: int = 16) -> bytes:
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(num_bytes)
+    except OSError:
+        return b""
+
+
+def _check_file_signature(path: Path, is_pdf: bool) -> None:
+    """Validate file content via magic bytes (not extension/MIME).
+
+    Rejects extension-spoofed or corrupt uploads cleanly. TIFF may also
+    legitimately fail this check but decode via OpenCV, so callers treat
+    undecodable images separately.
+    """
+    magic = _peek_magic(path)
+    if is_pdf:
+        if not magic.startswith(PDF_SIGNATURE):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "The uploaded PDF header is invalid. "
+                    "The file may be corrupt or not a real PDF."
+                ),
+            )
+        return
+    if magic.startswith(IMAGE_SIGNATURES):
+        return
+    # WEBP check needs offset: RIFF....WEBP
+    if magic.startswith(b"RIFF") and b"WEBP" in magic:
+        return
+    # TIFF variants already covered; allow OpenCV to decide for the rest
+    # (e.g. some BMP/TIFF encoders), but reject obvious text/exe content.
+    if magic[:2] == b"MZ" or magic.startswith(b"<?xml") or magic.startswith(b"%!PS"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "The uploaded file content does not match its extension. "
+                "Please upload a valid image or PDF document."
+            ),
+        )
+
+
+def _safe_delete(path) -> None:
+    """Best-effort file removal. Cleanup failures are logged, never raised."""
+    if not path:
+        return
+    try:
+        target = Path(path)
+        # Only delete files inside the backend uploads directory to avoid
+        # accidentally removing unrelated files.
+        uploads_root = UPLOAD_FOLDER.resolve()
+        resolved = target.resolve() if target.exists() else None
+        if resolved is None:
+            return
+        try:
+            resolved.relative_to(uploads_root)
+        except ValueError:
+            logger.warning("[CLEANUP] Refusing to delete outside uploads: %s", target)
+            return
+        if resolved.is_file():
+            resolved.unlink()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("[CLEANUP] Could not delete %s: %r", path, exc)
+
+
+def _cleanup_files(*paths) -> None:
+    if RETAIN_UPLOADED_FILES:
+        logger.info("[RETENTION] Keeping files (RETAIN_UPLOADED_FILES=1): %s", paths)
+        return
+    for path in paths:
+        _safe_delete(path)
+
+
+# =========================================================
 # VALIDATION HELPERS
 # =========================================================
+
+def _structural_status(valid: bool) -> str:
+    # "validated" = structurally/consistency valid. This never implies
+    # government authenticity; authenticity stays "not_verified".
+    # "failed" is kept for backward compatibility with existing clients.
+    return "validated" if valid else "failed"
+
 
 def base_validation(
     fields: dict,
@@ -311,11 +515,7 @@ def validate_pan(
 
     result["valid"] = not errors
 
-    result["status"] = (
-        "verified"
-        if result["valid"]
-        else "failed"
-    )
+    result["status"] = _structural_status(result["valid"])
 
     result["message"] = (
         "PAN fields passed structural validation."
@@ -407,17 +607,29 @@ def validate_aadhaar_fields(
 
     result["valid"] = not errors
 
-    result["status"] = (
-        "verified"
-        if result["valid"]
-        else "failed"
-    )
+    result["status"] = _structural_status(result["valid"])
 
     result["message"] = (
         "Aadhaar fields passed structural validation."
         if result["valid"]
         else "Aadhaar requires review."
     )
+
+    # Verhoeff checksum is a well-formedness signal only — never proof of
+    # government authenticity. Report a mismatch as a warning.
+    if checks["aadhaar_format"]:
+        try:
+            if not _verhoeff_checksum_ok(normalized):
+                result["warnings"].append(
+                    "Aadhaar number checksum did not validate; "
+                    "the number may be misread. This is not a "
+                    "government-authenticity check."
+                )
+                checks["aadhaar_checksum"] = False
+            else:
+                checks["aadhaar_checksum"] = True
+        except Exception:  # pragma: no cover - defensive
+            checks["aadhaar_checksum"] = False
 
     return result
 
@@ -547,11 +759,7 @@ def validate_passport(
 
     result["valid"] = not errors
 
-    result["status"] = (
-        "verified"
-        if result["valid"]
-        else "failed"
-    )
+    result["status"] = _structural_status(result["valid"])
 
     result["message"] = (
         "Passport fields passed structural validation."
@@ -605,11 +813,7 @@ def validate_voter_id(
 
     result["valid"] = not errors
 
-    result["status"] = (
-        "verified"
-        if result["valid"]
-        else "failed"
-    )
+    result["status"] = _structural_status(result["valid"])
 
     result["message"] = (
         "Voter ID fields passed structural validation."
@@ -683,11 +887,7 @@ def validate_driving_license(
 
     result["valid"] = not errors
 
-    result["status"] = (
-        "verified"
-        if result["valid"]
-        else "failed"
-    )
+    result["status"] = _structural_status(result["valid"])
 
     result["message"] = (
         "Driving Licence fields passed structural validation."
@@ -752,7 +952,11 @@ def verify_document_service(
     )
 
     # =====================================================
-    # SAVE FILE
+    # SAVE FILE (bounded streaming)
+    # =====================================================
+    # The upload is streamed in bounded chunks and the size cap is
+    # enforced WHILE writing, so an oversized upload never consumes
+    # unbounded disk. Oversize -> partial file deleted + HTTP 413.
     # =====================================================
 
     UPLOAD_FOLDER.mkdir(
@@ -765,37 +969,15 @@ def verify_document_service(
         / f"{uuid4().hex}_{safe_name}"
     )
 
-    with open(
-        file_path,
-        "wb",
-    ) as buffer:
+    _save_upload_bounded(file, file_path)
 
-        shutil.copyfileobj(
-            file.file,
-            buffer,
-        )
-
-    # =====================================================
-    # SIZE CHECK
-    # =====================================================
-
-    if (
-        file_path.stat().st_size
-        > MAX_FILE_SIZE
-    ):
-
-        file_path.unlink(
-            missing_ok=True
-        )
-
-        raise HTTPException(
-            status_code=413,
-            detail=(
-                "The file must be 10 MB or smaller."
-            ),
-        )
+    # Content/signature check: do not trust extension or client MIME
+    # alone. PDFs must carry a PDF header; obvious executables/scripts
+    # mislabelled as images are rejected before decoding.
+    _check_file_signature(file_path, is_pdf)
 
     processed_path = None
+    fallback_path = None
 
     try:
 
@@ -808,7 +990,8 @@ def verify_document_service(
         if is_pdf:
 
             ocr_text = extract_text(
-                str(file_path)
+                str(file_path),
+                max_dpi=PDF_RENDER_DPI,
             )
 
         else:
@@ -845,7 +1028,8 @@ def verify_document_service(
                 )
 
                 fallback_text = extract_text(
-                    fallback_path
+                    fallback_path,
+                    max_dpi=PDF_RENDER_DPI,
                 )
 
                 if fallback_text:
@@ -900,21 +1084,16 @@ def verify_document_service(
                 "checks": {},
             }
 
+            _cleanup_files(file_path, processed_path, fallback_path)
             return {
 
                 "filename": safe_name,
 
                 "content_type": file.content_type,
 
-                "saved_to": _relative_to_backend(
-                    file_path
-                ),
+                "saved_to": None,
 
-                "processed_file": (
-                    _relative_to_backend(
-                        processed_path
-                    )
-                ),
+                "processed_file": None,
 
                 "document_type": "unknown",
 
@@ -1218,14 +1397,12 @@ def verify_document_service(
             f"{time.perf_counter() - start:.2f}s"
         )
 
-        print(
-            "[EXTRACTED FIELDS]",
-            fields,
-        )
-
-        print(
-            "[VALIDATION]",
-            validation,
+        logger.info(
+            "[EXTRACTED] type=%s valid=%s errors=%d warnings=%d",
+            document_type,
+            validation.get("valid"),
+            len(validation.get("errors") or []),
+            len(validation.get("warnings") or []),
         )
 
         # =================================================
@@ -1234,7 +1411,8 @@ def verify_document_service(
 
         if validation.get("valid"):
             top_level_message = (
-                "Document processed and verified successfully."
+                "Document processed and structurally validated "
+                "successfully. This does not prove government authenticity."
             )
         elif validation.get("status") == "unsupported":
             top_level_message = (
@@ -1243,7 +1421,7 @@ def verify_document_service(
             )
         else:
             top_level_message = (
-                "Document processed, but verification failed "
+                "Document processed, but structural validation failed "
                 "or requires review."
             )
 
@@ -1261,29 +1439,19 @@ def verify_document_service(
 
             verification_status=(
                 validation.get("status")
-                or (
-                    "verified"
-                    if validation.get("valid")
-                    else "failed"
-                )
+                or _structural_status(bool(validation.get("valid")))
             ),
         )
 
-        return {
+        response = {
 
             "filename": safe_name,
 
             "content_type": file.content_type,
 
-            "saved_to": _relative_to_backend(
-                file_path
-            ),
+            "saved_to": None,
 
-            "processed_file": (
-                _relative_to_backend(
-                    processed_path
-                )
-            ),
+            "processed_file": None,
 
             "document_type": document_type,
 
@@ -1304,11 +1472,30 @@ def verify_document_service(
             "message": top_level_message,
         }
 
+        # Temporary files are removed by default once the response payload
+        # is built (retention opt-in via RETAIN_UPLOADED_FILES=1). Database
+        # persistence already happened above and does not need the files.
+        # Keep backward-compatible keys present but do not expose server
+        # paths when cleanup is enabled.
+        if RETAIN_UPLOADED_FILES:
+            response["saved_to"] = _relative_to_backend(file_path)
+            response["processed_file"] = _relative_to_backend(processed_path)
+        _cleanup_files(file_path, processed_path, fallback_path)
+        return response
+
     except HTTPException:
 
+        _cleanup_files(
+            locals().get("file_path"), locals().get("processed_path"),
+            locals().get("fallback_path"),
+        )
         raise
 
     except ValueError as exc:
+        _cleanup_files(
+            locals().get("file_path"), locals().get("processed_path"),
+            locals().get("fallback_path"),
+        )
 
         # Raised deliberately by image_service.py for user-facing
         # problems with the uploaded file itself (corrupt file,
@@ -1327,6 +1514,10 @@ def verify_document_service(
         ) from exc
 
     except Exception as exc:
+        _cleanup_files(
+            locals().get("file_path"), locals().get("processed_path"),
+            locals().get("fallback_path"),
+        )
 
         print(
             "[ERROR] Document processing failed:",

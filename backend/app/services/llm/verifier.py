@@ -1,10 +1,11 @@
 """
-Optional LLM-based verification helper.
+Optional LLM-based verification helper (experimental, NOT used by the
+production pipeline).
 
-The LLM integration is OPTIONAL. It must never break application
-startup or the OCR/verification import chain when ``langchain`` is
-not installed, so the heavy dependency is imported lazily inside
-the function that actually needs it.
+Nothing in the document pipeline imports this module. It exists only as
+an isolated hook for future experimentation and requires the optional
+``langchain`` dependency plus an OpenAI API key. Core verification works
+without it and never claims LLM/authenticity verification.
 """
 
 

@@ -144,6 +144,26 @@ def test_classifier_accepts_list_input():
     assert result["document_type"] == "pan"
 
 
+def test_classifier_confidence_is_heuristic_not_probability():
+    # Heuristic score formula: min(0.99, 0.50 + best_score * 0.045)
+    # with an ambiguity penalty — not a calibrated probability.
+    result = classify_document(PAN_TEXT)
+    assert result["document_type"] == "pan"
+    assert 0.5 <= result["confidence"] <= 0.99
+
+
+def test_classifier_does_not_guess_on_weak_evidence():
+    assert classify_document("hello world random text")["document_type"] == "unknown"
+
+
+def test_classifier_mrz_strongly_supports_passport():
+    result = classify_document(
+        "P<INDSHARMA<<RAHUL<<<<<<<<<<<<<<<<<<<<<<\n"
+        "M1234567<4IND9502142M3001092<<<<<<<<<<<<<<02"
+    )
+    assert result["document_type"] == "passport"
+
+
 # =========================================================
 # REAL-WORLD OCR REGRESSION (reported production failure)
 # =========================================================

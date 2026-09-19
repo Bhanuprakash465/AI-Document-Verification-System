@@ -15,6 +15,11 @@ from fastapi import HTTPException
 # than this is truncated before OCR to keep requests bounded.
 MAX_PDF_PAGES = 5
 
+# Upper bound for PDF raster resolution. High-resolution or heavily
+# compressed PDFs can otherwise consume excessive CPU/RAM during
+# rasterization; DocTR forwards kwargs to pypdfium2's page render.
+MAX_PDF_DPI = 150
+
 
 @lru_cache(maxsize=1)
 def _get_model():
@@ -174,6 +179,7 @@ def _deduplicate_lines(
 
 def extract_text(
     image_path: str,
+    max_dpi: int = 150,
 ) -> list[str]:
 
     try:
@@ -212,9 +218,20 @@ def extract_text(
 
         if is_pdf:
 
-            document = DocumentFile.from_pdf(
-                str(path)
-            )
+            # Bounded rasterization: cap pages (below) and resolution so
+            # hostile/oversized PDFs fail gracefully instead of exhausting
+            # CPU/RAM. DocTR forwards kwargs to pypdfium2 page rendering.
+            render_scale = max(1.0, min(float(max_dpi), float(MAX_PDF_DPI)) / 72.0)
+            try:
+                document = DocumentFile.from_pdf(
+                    str(path),
+                    scale=render_scale,
+                )
+            except TypeError:
+                # Older DocTR/pypdfium2 builds without the scale kwarg.
+                document = DocumentFile.from_pdf(
+                    str(path)
+                )
 
         else:
 

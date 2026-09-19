@@ -99,6 +99,7 @@ document.addEventListener("DOMContentLoaded", () => {
     initializeResultSection();
     initializeUpload();
     initializeNavigation();
+    refreshSystemStatus();
 
     if (verifyButton) {
         verifyButton.disabled = true;
@@ -746,7 +747,7 @@ function renderVerificationResult(data) {
 
 
     /* -----------------------------------------------------
-       CONFIDENCE
+       CONFIDENCE (heuristic rule-based score, not a probability)
        ----------------------------------------------------- */
 
     const confidence =
@@ -808,7 +809,7 @@ function renderVerificationResult(data) {
 
         addResultField(
             resultGrid,
-            "DETECTION CONFIDENCE",
+            "CLASSIFICATION CONFIDENCE (HEURISTIC)",
             confidence !== null
                 ? `${Math.round(confidence * 100)}%`
                 : "N/A"
@@ -1548,9 +1549,14 @@ function renderValidationMessages(
         warnings.length === 0
     ) {
 
-        resultErrors.classList.add(
+        resultErrors.classList.remove(
             "hidden"
         );
+
+        resultErrors.textContent =
+            "Structural validation passed. Note: authenticity: " +
+            "not_verified (this system does not prove government " +
+            "authenticity).";
 
         return;
     }
@@ -1624,6 +1630,27 @@ function renderValidationMessages(
 
     resultErrors.appendChild(
         list
+    );
+
+    // Authenticity is never verified by this system — make it explicit
+    // alongside every validation result.
+    const authenticityNote =
+        document.createElement(
+            "p"
+        );
+
+    authenticityNote.style.marginTop =
+        "12px";
+
+    authenticityNote.style.fontSize =
+        "12px";
+
+    authenticityNote.textContent =
+        "Note: structural validation only — authenticity: not_verified " +
+        "(this system does not prove government authenticity).";
+
+    resultErrors.appendChild(
+        authenticityNote
     );
 }
 
@@ -1754,6 +1781,51 @@ function initializeNavigation() {
                 );
             }
         );
+}
+
+
+/* =========================================================
+   SYSTEM STATUS (reflects GET /health, not a static claim)
+   ========================================================= */
+
+function refreshSystemStatus() {
+
+    const statusElement =
+        document.getElementById("system-status");
+
+    if (!statusElement) {
+        return;
+    }
+
+    const setStatus = text => {
+        statusElement.innerHTML = "";
+        const dot = document.createElement("span");
+        dot.className = "status-dot";
+        statusElement.appendChild(dot);
+        statusElement.appendChild(document.createTextNode(text));
+    };
+
+    fetch("/health", { cache: "no-store" })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`health ${response.status}`);
+            }
+            return response.json();
+        })
+        .then(data => {
+            if (data && data.status === "healthy") {
+                setStatus(
+                    data.database === "ready"
+                        ? "SYSTEM ONLINE · DB READY"
+                        : "SYSTEM ONLINE"
+                );
+            } else {
+                setStatus("SYSTEM STATUS UNKNOWN");
+            }
+        })
+        .catch(() => {
+            setStatus("BACKEND UNREACHABLE");
+        });
 }
 
 
