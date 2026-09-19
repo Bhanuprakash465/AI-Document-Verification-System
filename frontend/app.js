@@ -9,9 +9,33 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
 const ALLOWED_TYPES = [
     "image/jpeg",
+    "image/jpg",
     "image/png",
+    "image/webp",
+    "image/bmp",
+    "image/x-ms-bmp",
+    "image/tiff",
     "application/pdf"
 ];
+
+// Some browsers report an empty/unreliable MIME type for BMP and
+// TIFF files, so the extension is also checked as a fallback -
+// the backend performs the real validation either way.
+const ALLOWED_EXTENSIONS = [
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp",
+    ".bmp",
+    ".tiff",
+    ".tif",
+    ".pdf"
+];
+
+function hasAllowedExtension(filename) {
+    const lower = String(filename || "").toLowerCase();
+    return ALLOWED_EXTENSIONS.some(ext => lower.endsWith(ext));
+}
 
 /* =========================================================
    PAGE LOADER
@@ -299,10 +323,13 @@ function handleSelectedFile(file) {
        FILE TYPE
        ----------------------------------------------------- */
 
-    if (!ALLOWED_TYPES.includes(file.type)) {
+    if (
+        !ALLOWED_TYPES.includes(file.type) &&
+        !hasAllowedExtension(file.name)
+    ) {
 
         showUploadError(
-            "Only JPG, PNG and PDF files are supported."
+            "Only JPG, PNG, WEBP, BMP, TIFF and PDF files are supported."
         );
 
         resetFile();
@@ -737,6 +764,9 @@ function renderVerificationResult(data) {
     const isValid =
         validation.valid === true;
 
+    const isOcrFailure =
+        validation.status === "ocr_failed";
+
 
     if (resultStatus) {
 
@@ -754,7 +784,9 @@ function renderVerificationResult(data) {
         resultStatus.textContent =
             isValid
                 ? "VALIDATED"
-                : "REVIEW REQUIRED";
+                : isOcrFailure
+                    ? "NO TEXT DETECTED"
+                    : "REVIEW REQUIRED";
     }
 
 

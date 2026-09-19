@@ -17,3 +17,16 @@ backend/uploads/*
 
 # Logs
 *.log
+# Temporary / generated JSON
+backend/_pp.json
+*_pp.json
+
+# Test/cache artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Generated processed files
+processed_*.json
+# Continue AI editor configuration
+.continue/

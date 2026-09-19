@@ -17,6 +17,19 @@ def _clean(value: str | None) -> str | None:
     return value or None
 
 
+def _clean_number(value: str | None) -> str | None:
+    """
+    Normalise a licence number: uppercase, strip internal spaces
+    (OCR frequently inserts or drops spaces inside long numbers).
+    """
+    if not value:
+        return None
+
+    value = re.sub(r"\s+", "", str(value)).upper().strip()
+
+    return value or None
+
+
 def _find_first(
     text: str,
     patterns: list[str],
@@ -67,15 +80,58 @@ def extract_driving_license_fields(
     # ---------------------------------------------------------
     # Licence number
     # ---------------------------------------------------------
+    # OCR-tolerant: "DL" is frequently misread as "DLI"/"D1"/"DL1"
+    # and the number itself may contain stray spaces or have its
+    # leading letter misread as a digit (e.g. TS -> 1S). The label
+    # pattern therefore allows D/L/I/1 variants, and the captured
+    # number is normalised (uppercased, spaces removed).
+    #
+    # Matching is done PER LINE: a whole-text search could match
+    # "LICENCE" at the end of the "DRIVING LICENCE" heading and
+    # then swallow the start of the NEXT line as the "number".
+    # ---------------------------------------------------------
 
-    licence_number = _find_first(
-        text,
-        [
-            r"(?:DL\s*(?:NO|NUMBER)?|LICEN[CS]E\s*(?:NO|NUMBER)?)[\s:.-]*([A-Z0-9/-]{6,25})",
+    licence_number = None
 
-            r"\b([A-Z]{2}\d{2}\s?\d{4,15})\b",
-        ],
+    label_patterns = [
+        re.compile(
+            r"(?:D[L1][I1lL]?|LICEN[CS]E)\s*(?:NO|NUMBER|N0)?\s*[:.\-]?\s*"
+            r"([A-Z0-9][A-Z0-9 /-]{4,24})\s*$",
+            re.IGNORECASE,
+        ),
+    ]
+
+    generic_pattern = re.compile(
+        r"\b([A-Z]{2,3}\d{2}[ ]?\d{4,15})\b",
+        re.IGNORECASE,
     )
+
+    for line in lines:
+
+        for pattern in label_patterns:
+
+            match = pattern.search(line)
+
+            if match:
+                licence_number = _clean_number(
+                    match.group(1)
+                )
+                break
+
+        if licence_number:
+            break
+
+    if not licence_number:
+
+        for line in lines:
+
+            match = generic_pattern.search(line)
+
+            if match:
+                licence_number = _clean_number(
+                    match.group(1)
+                )
+                break
 
     # ---------------------------------------------------------
     # Name

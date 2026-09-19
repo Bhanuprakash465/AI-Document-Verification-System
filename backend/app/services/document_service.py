@@ -10,9 +10,15 @@ from fastapi import HTTPException, UploadFile
 from app.services.image_service import preprocess_image
 from app.services.ocr.ocr_service import extract_text
 from app.services.document_classifier import classify_document
+from app.database.database import SessionLocal
+from app.models.document import Document
 
 from app.services.extractor.aadhaar_extractor import (
     extract_aadhaar_fields,
+)
+
+from app.services.extractor.pan_extractor import (
+    extract_pan_fields,
 )
 
 from app.services.extractor.driving_license_extractor import (
@@ -39,10 +45,37 @@ UPLOAD_FOLDER = (
 
 MAX_FILE_SIZE = 10 * 1024 * 1024
 
+# Content-Type values browsers/clients commonly send for each
+# supported format. Kept broad on purpose - different browsers and
+# operating systems are inconsistent about MIME types for BMP/TIFF.
 ALLOWED_TYPES = {
     "image/jpeg",
+    "image/jpg",
     "image/png",
+    "image/webp",
+    "image/bmp",
+    "image/x-ms-bmp",
+    "image/x-bmp",
+    "image/tiff",
+    "image/tif",
     "application/pdf",
+}
+
+# Fallback check by file extension. Content-Type alone is not
+# trustworthy (some browsers send "application/octet-stream" for
+# BMP/TIFF), and extension alone is not trustworthy either (it can
+# be forged) - so a file is accepted if EITHER signal matches, and
+# the real gatekeeper is that the file must then actually decode
+# successfully as an image or PDF later in this pipeline.
+ALLOWED_EXTENSIONS = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp",
+    ".bmp",
+    ".tiff",
+    ".tif",
+    ".pdf",
 }
 
 
@@ -129,159 +162,71 @@ def parse_date(value: str):
     return None
 
 
-# =========================================================
-# PAN EXTRACTION
-# =========================================================
+def _relative_to_backend(path) -> str | None:
+    """
+    Convert an absolute server-side path into a path relative to the
+    backend directory. Absolute local filesystem paths must not leak
+    into public API responses.
+    """
 
-def extract_pan_fields(
+    if not path:
+        return None
+
+    try:
+        return str(
+            Path(path).resolve().relative_to(
+                Path(__file__).resolve().parents[2]
+            )
+        )
+    except ValueError:
+        # Outside the backend tree - return only the file name.
+        return Path(path).name
+
+
+def persist_document(
+    filename: str,
+    document_type: str,
     ocr_text: list[str],
-) -> dict:
+    verification_status: str,
+) -> None:
+    """
+    Persist a verification result to the database.
 
-    fields = {
+    Persistence is a best-effort side effect: a database problem
+    must NEVER break the verification response, so every error is
+    caught and logged only.
+    """
 
-        "document_type": "pan",
+    db = None
 
-        "pan_number": None,
+    try:
 
-        "name": None,
+        db = SessionLocal()
 
-        "father_name": None,
-
-        "dob": None,
-    }
-
-    lines = [
-
-        clean_line(line)
-
-        for line in ocr_text
-
-        if line and line.strip()
-    ]
-
-    full_text = "\n".join(lines)
-
-    # ---------------------------------------------------------
-    # PAN NUMBER
-    # ---------------------------------------------------------
-
-    match = PAN_PATTERN.search(
-        full_text
-    )
-
-    if match:
-
-        fields["pan_number"] = (
-            match.group().upper()
+        record = Document(
+            filename=filename,
+            document_type=document_type,
+            extracted_text="\n".join(ocr_text or [])[:200000],
+            verification_status=verification_status,
         )
 
-    # ---------------------------------------------------------
-    # DOB
-    # ---------------------------------------------------------
+        db.add(record)
+        db.commit()
 
-    for index, line in enumerate(lines):
+    except Exception as exc:  # pragma: no cover - defensive
 
-        if DATE_PATTERN.search(line):
-
-            fields["dob"] = (
-                DATE_PATTERN.search(
-                    line
-                ).group()
-            )
-
-            break
-
-    # ---------------------------------------------------------
-    # NAME
-    # ---------------------------------------------------------
-
-    for index, line in enumerate(lines):
-
-        normalized = line.lower()
-
-        if "father" in normalized:
-            continue
-
-        if not re.search(
-            r"\bname\b",
-            normalized,
-        ):
-            continue
-
-        value = re.sub(
-            r"(?i).*?\bname\b"
-            r"\s*[:\-]?\s*",
-            "",
-            line,
-        ).strip()
-
-        candidate = clean_name(
-            value
+        print(
+            "[DB] Failed to persist document record:",
+            repr(exc),
         )
 
-        if candidate:
+        if db is not None:
+            db.rollback()
 
-            fields["name"] = candidate
+    finally:
 
-            break
-
-        if index + 1 < len(lines):
-
-            candidate = clean_name(
-                lines[index + 1]
-            )
-
-            if candidate:
-
-                fields["name"] = candidate
-
-                break
-
-    # ---------------------------------------------------------
-    # FATHER NAME
-    # ---------------------------------------------------------
-
-    for index, line in enumerate(lines):
-
-        normalized = line.lower()
-
-        if "father" not in normalized:
-            continue
-
-        value = re.sub(
-            r"(?i).*?father'?s?\s*name"
-            r"\s*[:\-]?\s*",
-            "",
-            line,
-        ).strip()
-
-        candidate = clean_name(
-            value
-        )
-
-        if candidate:
-
-            fields["father_name"] = (
-                candidate
-            )
-
-            break
-
-        if index + 1 < len(lines):
-
-            candidate = clean_name(
-                lines[index + 1]
-            )
-
-            if candidate:
-
-                fields["father_name"] = (
-                    candidate
-                )
-
-                break
-
-    return fields
+        if db is not None:
+            db.close()
 
 
 # =========================================================
@@ -492,6 +437,15 @@ def validate_passport(
     warnings = result["warnings"]
 
     checks = result["checks"]
+
+    # -----------------------------------------------------
+    # MRZ vs visual-OCR date conflicts detected by the
+    # extractor are surfaced as warnings, never silently
+    # resolved.
+    # -----------------------------------------------------
+
+    for conflict in fields.get("date_warnings") or []:
+        warnings.append(str(conflict))
 
     passport_number = fields.get(
         "passport_number"
@@ -756,21 +710,46 @@ def verify_document_service(
     # FILE VALIDATION
     # =====================================================
 
-    if file.content_type not in ALLOWED_TYPES:
-
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Only JPG, PNG and PDF files are allowed."
-            ),
-        )
-
     if not file.filename:
 
         raise HTTPException(
             status_code=400,
             detail="A filename is required.",
         )
+
+    # Use only the final path component - this also prevents
+    # path traversal via a crafted filename (e.g. "../../evil").
+    safe_name = Path(
+        file.filename
+    ).name
+
+    extension = Path(safe_name).suffix.lower()
+
+    type_is_allowed = (
+        file.content_type in ALLOWED_TYPES
+    )
+
+    extension_is_allowed = (
+        extension in ALLOWED_EXTENSIONS
+    )
+
+    if not type_is_allowed and not extension_is_allowed:
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Unsupported file type. Please upload a JPG, "
+                "JPEG, PNG, WEBP, BMP, TIFF or PDF file."
+            ),
+        )
+
+    # A PDF is routed to the PDF-specific OCR path if EITHER the
+    # content type or the extension says so, since real-world
+    # clients are inconsistent about which one they set correctly.
+    is_pdf = (
+        extension == ".pdf"
+        or file.content_type == "application/pdf"
+    )
 
     # =====================================================
     # SAVE FILE
@@ -780,10 +759,6 @@ def verify_document_service(
         parents=True,
         exist_ok=True,
     )
-
-    safe_name = Path(
-        file.filename
-    ).name
 
     file_path = (
         UPLOAD_FOLDER
@@ -830,10 +805,7 @@ def verify_document_service(
 
         start = time.perf_counter()
 
-        if (
-            file.content_type
-            == "application/pdf"
-        ):
+        if is_pdf:
 
             ocr_text = extract_text(
                 str(file_path)
@@ -842,17 +814,132 @@ def verify_document_service(
         else:
 
             processed_path = preprocess_image(
-                str(file_path)
+                str(file_path),
+                mode="enhanced",
             )
 
             ocr_text = extract_text(
                 processed_path
             )
 
+            # -------------------------------------------------
+            # CONTROLLED FALLBACK
+            # -------------------------------------------------
+            # If the enhanced pipeline (grayscale + contrast +
+            # sharpening) found nothing, try again with a lighter
+            # "minimal" preprocessing pass before giving up. This
+            # is a single, deterministic extra attempt - not an
+            # open-ended retry loop - so it stays fast.
+            # -------------------------------------------------
+
+            if not ocr_text:
+
+                print(
+                    "[OCR] Enhanced pass found no text - "
+                    "retrying with minimal preprocessing."
+                )
+
+                fallback_path = preprocess_image(
+                    str(file_path),
+                    mode="minimal",
+                )
+
+                fallback_text = extract_text(
+                    fallback_path
+                )
+
+                if fallback_text:
+
+                    ocr_text = fallback_text
+                    processed_path = fallback_path
+
         print(
             "[PERFORMANCE] OCR: "
             f"{time.perf_counter() - start:.2f}s"
         )
+
+        # =================================================
+        # OCR FAILURE CHECK
+        # =================================================
+        # If OCR extracted zero usable text after every attempt,
+        # this is NOT a verified (or even "unsupported type")
+        # result - it is an OCR failure, and must be reported as
+        # such rather than silently continuing.
+        # =================================================
+
+        if not ocr_text:
+
+            print(
+                "[OCR] No text detected after all attempts."
+            )
+
+            validation = {
+
+                "valid": False,
+
+                "errors": [
+                    "No readable text could be extracted "
+                    "from this document."
+                ],
+
+                "warnings": [],
+
+                "status": "ocr_failed",
+
+                "message": (
+                    "OCR could not detect any text in the "
+                    "uploaded document. Please upload a "
+                    "clearer, well-lit photo or a higher "
+                    "resolution scan."
+                ),
+
+                "confidence": 0.0,
+
+                "authenticity": "not_verified",
+
+                "checks": {},
+            }
+
+            return {
+
+                "filename": safe_name,
+
+                "content_type": file.content_type,
+
+                "saved_to": _relative_to_backend(
+                    file_path
+                ),
+
+                "processed_file": (
+                    _relative_to_backend(
+                        processed_path
+                    )
+                ),
+
+                "document_type": "unknown",
+
+                "display_name": "Unknown Document",
+
+                "confidence": 0.0,
+
+                "document": {
+                    "document_type": "unknown",
+                    "display_name": "Unknown Document",
+                    "confidence": 0.0,
+                },
+
+                "ocr_text": [],
+
+                "fields": {
+                    "document_type": "unknown",
+                },
+
+                "validation": validation,
+
+                "message": (
+                    "OCR failed: no text detected."
+                ),
+            }
 
         # =================================================
         # CLASSIFICATION
@@ -1145,23 +1232,66 @@ def verify_document_service(
         # FINAL RESPONSE
         # =================================================
 
+        if validation.get("valid"):
+            top_level_message = (
+                "Document processed and verified successfully."
+            )
+        elif validation.get("status") == "unsupported":
+            top_level_message = (
+                "Document processed, but this document type "
+                "is not currently supported."
+            )
+        else:
+            top_level_message = (
+                "Document processed, but verification failed "
+                "or requires review."
+            )
+
+        # =================================================
+        # PERSISTENCE (best-effort, never breaks the response)
+        # =================================================
+
+        persist_document(
+
+            filename=safe_name,
+
+            document_type=document_type,
+
+            ocr_text=ocr_text,
+
+            verification_status=(
+                validation.get("status")
+                or (
+                    "verified"
+                    if validation.get("valid")
+                    else "failed"
+                )
+            ),
+        )
+
         return {
 
             "filename": safe_name,
 
             "content_type": file.content_type,
 
-            "saved_to": str(
+            "saved_to": _relative_to_backend(
                 file_path
             ),
 
             "processed_file": (
-                str(processed_path)
-                if processed_path
-                else None
+                _relative_to_backend(
+                    processed_path
+                )
             ),
 
             "document_type": document_type,
+
+            "display_name": document_info.get(
+                "display_name"
+            ),
+
+            "confidence": confidence,
 
             "document": document_info,
 
@@ -1171,14 +1301,30 @@ def verify_document_service(
 
             "validation": validation,
 
-            "message": (
-                "Document processed successfully."
-            ),
+            "message": top_level_message,
         }
 
     except HTTPException:
 
         raise
+
+    except ValueError as exc:
+
+        # Raised deliberately by image_service.py for user-facing
+        # problems with the uploaded file itself (corrupt file,
+        # undecodable image, degenerate/too-small crop, etc). The
+        # message is already safe to show to the user - no stack
+        # trace or internal details are included.
+
+        print(
+            "[ERROR] Invalid document:",
+            repr(exc),
+        )
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
 
     except Exception as exc:
 

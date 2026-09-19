@@ -577,6 +577,58 @@ def extract_address(
 # NAME DETECTION
 # =========================================================
 
+def _name_plausibility(candidate: str) -> int:
+    """
+    Score how much a cleaned line looks like a real person name
+    written in Latin script (English/romanised Indian names).
+
+    Devanagari-derived OCR garbage ("SSSTRT IT", "STETK TCT")
+    has very few vowels and long consonant runs, while real names
+    ("Prakash Ranjan") have a healthy vowel ratio. This score is
+    what separates the two when both are near the DOB line.
+    """
+
+    letters = [
+        character
+        for character in candidate.upper()
+        if character.isalpha()
+    ]
+
+    if not letters:
+        return -100
+
+    vowels = sum(
+        character in "AEIOU"
+        for character in letters
+    )
+
+    ratio = vowels / len(letters)
+
+    score = 0
+
+    # Real romanised names sit roughly in 0.25-0.60.
+    if 0.25 <= ratio <= 0.60:
+        score += 6
+    elif ratio < 0.15 or ratio > 0.75:
+        score -= 8
+
+    # Penalise 3+ identical consecutive letters ("SSS").
+    if re.search(
+        r"(.)\1{2,}",
+        candidate.upper(),
+    ):
+        score -= 8
+
+    # Penalise runs of 4+ consonants ("SSSTRT").
+    if re.search(
+        r"[BCDFGHJKLMNPQRSTVWXYZ]{4,}",
+        candidate.upper(),
+    ):
+        score -= 6
+
+    return score
+
+
 def extract_name(
     lines: list[str],
     dates: list[str],
@@ -586,9 +638,11 @@ def extract_name(
     rejected = [
         "GOVERNMENT OF INDIA",
         "GOVT OF INDIA",
+        "GOVERNMENT",
         "UNIQUE IDENTIFICATION",
         "AUTHORITY",
         "AADHAAR",
+        "AADHAR",
         "UIDAI",
         "INDIA",
         "ADDRESS",
@@ -605,6 +659,11 @@ def extract_name(
         "IDENTITY",
         "SIGNATURE",
         "MY AADHAAR",
+        # Scanner watermarks are never the person's name.
+        "SCANNED BY",
+        "CAMSCANNER",
+        "SCANNER",
+        "SCANNED",
     ]
 
     candidates = []
@@ -612,6 +671,21 @@ def extract_name(
     for index, line in enumerate(lines):
 
         candidate = clean_name(line)
+
+        if not candidate:
+            continue
+
+        # Strip a leading "NAME" label token - many cards print
+        # "Name: RAHUL SHARMA" and the label must not become part
+        # of the extracted person name.
+        candidate = re.sub(
+            r"^NAME\s*[:\-]?\s*",
+            "",
+            candidate,
+            flags=re.IGNORECASE,
+        ).strip()
+
+        candidate = clean_name(candidate)
 
         if not candidate:
             continue
@@ -648,6 +722,11 @@ def extract_name(
         # Score candidate.
         score = 0
 
+        # Plausibility dominates: a line that does not look like a
+        # Latin-script person name must lose to one that does,
+        # regardless of position.
+        score += _name_plausibility(candidate)
+
         # Names generally contain 2-4 words.
         if 2 <= len(words) <= 4:
             score += 5
@@ -659,7 +738,7 @@ def extract_name(
         ):
             score += 3
 
-        # Prefer candidates near DOB/gender.
+        # Prefer candidates near DOB/gender (weak context bonus).
         nearby = " ".join(
             lines[
                 index + 1:
@@ -676,7 +755,7 @@ def extract_name(
                 nearby,
             )
         ):
-            score += 6
+            score += 3
 
         # Penalize suspiciously long names.
         if len(candidate) > 40:

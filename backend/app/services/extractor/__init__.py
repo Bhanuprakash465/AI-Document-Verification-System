@@ -2,6 +2,10 @@ from app.services.extractor.aadhaar_extractor import (
     extract_aadhaar_fields,
 )
 
+from app.services.extractor.pan_extractor import (
+    extract_pan_fields,
+)
+
 from app.services.extractor.driving_license_extractor import (
     extract_driving_license_fields,
 )
@@ -33,6 +37,7 @@ def extract_fields(
 __all__ = [
     "extract_fields",
     "extract_aadhaar_fields",
+    "extract_pan_fields",
     "extract_driving_license_fields",
     "extract_passport_fields",
     "extract_voter_id_fields",

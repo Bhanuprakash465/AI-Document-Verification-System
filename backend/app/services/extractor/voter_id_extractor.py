@@ -44,6 +44,264 @@ def clean_name(text: str):
     return text.upper()
 
 
+# =========================================================
+# NAME HELPERS
+# =========================================================
+
+# Lines that are structural labels / boilerplate, never a person's
+# name.  Used to reject OCR garbage that happens to look alphabetic.
+_NAME_REJECTED = {
+    "GOVERNMENT OF INDIA",
+    "GOVT OF INDIA",
+    "GOVERNMENT",
+    "UNIQUE IDENTIFICATION",
+    "AUTHORITY",
+    "AADHAAR",
+    "UIDAI",
+    "INDIA",
+    "ADDRESS",
+    "DATE OF BIRTH",
+    "DOB",
+    "YEAR OF BIRTH",
+    "GENDER",
+    "MALE",
+    "FEMALE",
+    "TRANSGENDER",
+    "ELECTION COMMISSION",
+    "ELECTOR",
+    "EPIC",
+    "VOTER",
+    "IDENTITY CARD",
+    "PHOTO IDENTITY",
+    "SIGNATURE",
+    "SCANNED BY",
+    "CAMSCANNER",
+    "SCANNER",
+    "SCANNED",
+}
+
+
+def _split_camel_case(text: str) -> list[str]:
+    """
+    Split camelCase / PascalCase text into word tokens.
+
+    Examples:
+        AbhishekKumarsingh -> ["Abhishek", "Kumarsingh"]
+        RAHUL SHARMA       -> ["RAHUL", "SHARMA"]
+    """
+
+    return re.findall(
+        r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])",
+        text,
+    )
+
+
+def _char_diff(a: str, b: str) -> int:
+    """
+    Count character-level differences between two strings
+    (case-insensitive).  Strings of very different length are
+    considered dissimilar.
+    """
+    a = a.lower()
+    b = b.lower()
+    if abs(len(a) - len(b)) > 2:
+        return 999
+    max_len = max(len(a), len(b))
+    a = a.ljust(max_len)
+    b = b.ljust(max_len)
+    return sum(1 for x, y in zip(a, b) if x != y)
+
+
+def _looks_like_name(text: str) -> bool:
+    """
+    Heuristic: does *text* look like a real person name rather
+    than OCR garbage or a structural label?
+    """
+    candidate = clean_name(text)
+    if not candidate:
+        return False
+
+    upper = candidate.upper()
+
+    for value in _NAME_REJECTED:
+        if value in upper:
+            return False
+
+    # Reject lines with too many single-character tokens.
+    words = upper.split()
+    single_char_count = sum(
+        len(word) == 1 for word in words
+    )
+    if single_char_count > 1:
+        return False
+
+    return True
+
+
+def _extract_name_from_label(
+    lines: list[str],
+    label_index: int,
+) -> str | None:
+    """
+    Extract a person's name from the line at *label_index* (which
+    contains a "Name:" label) and any continuation lines.
+
+    Handles:
+      * camelCase names with no spaces ("AbhishekKumarsingh")
+      * names split across multiple OCR lines
+      * OCR noise on the same line as the label
+    """
+    line = lines[label_index]
+
+    # Strip the "Name:" label and any trailing punctuation.
+    value = re.sub(
+        r"(?i).*?\bname\b\s*[:\-]?\s*",
+        "",
+        line,
+    ).strip()
+
+    # Remove trailing punctuation that OCR sometimes fuses
+    # onto the label (e.g. "Name: AbhishekKumarsingn" is fine,
+    # but "Name. Abhishek" should still work).
+    value = re.sub(r"^[.\-,:;\s]+", "", value).strip()
+
+    # Split camelCase into word tokens.
+    parts = _split_camel_case(value)
+
+    # If the same-line value produced no usable tokens, try the
+    # next line as a fallback (but only if it looks like a name).
+    if not parts or not any(
+        p.isalpha() and len(p) >= 2 for p in parts
+    ):
+        if label_index + 1 < len(lines):
+            next_line = lines[label_index + 1]
+            if _looks_like_name(next_line):
+                parts = _split_camel_case(next_line)
+
+    # -------------------------------------------------
+    # Multi-line continuation: if the name value is a single
+    # word (camelCase) and the next line is a single alphabetic
+    # word, the next line is likely a surname continuation.
+    # -------------------------------------------------
+    if (
+        len(parts) == 1
+        and len(parts[0]) > 6
+        and label_index + 1 < len(lines)
+    ):
+        next_line = lines[label_index + 1]
+        next_parts = _split_camel_case(next_line)
+
+        # Only combine if the next line is a single alphabetic word
+        # that looks like a name fragment (not a label or garbage).
+        if (
+            len(next_parts) == 1
+            and next_parts[0].isalpha()
+            and len(next_parts[0]) >= 2
+        ):
+            next_word = next_parts[0]
+
+            # Try to split the long word where the next-line word
+            # (or an OCR variant of it) begins as a suffix.
+            # e.g. "Kumarsingn" + "Singh" -> "Kumar" + "Singh"
+            # because "singn" is within 1 char of "Singh".
+            split_done = False
+            for split_pos in range(3, len(parts[0]) - 2):
+                suffix = parts[0][split_pos:]
+                if _char_diff(suffix, next_word) <= 1:
+                    parts = [
+                        parts[0][:split_pos],
+                        next_word,
+                    ]
+                    split_done = True
+                    break
+
+            if not split_done:
+                # No suffix match - just append the continuation.
+                parts.append(next_word)
+
+    # Also handle the case where the same-line value already has
+    # multiple words but the next line is a continuation.
+    elif (
+        len(parts) >= 2
+        and label_index + 1 < len(lines)
+    ):
+        next_line = lines[label_index + 1]
+        next_parts = _split_camel_case(next_line)
+
+        if (
+            len(next_parts) == 1
+            and next_parts[0].isalpha()
+            and len(next_parts[0]) >= 2
+            and not _looks_like_name(next_line)
+            # Only add if the next word isn't already a suffix
+            # of the last part (avoid duplicates from OCR).
+            and not parts[-1].lower().endswith(
+                next_parts[0].lower()
+            )
+        ):
+            # Check if the last part ends with a variant of
+            # the next word (OCR corruption).
+            last = parts[-1]
+            if len(last) > 6:
+                for split_pos in range(3, len(last) - 2):
+                    suffix = last[split_pos:]
+                    if _char_diff(suffix, next_parts[0]) <= 1:
+                        parts = (
+                            parts[:-1]
+                            + [last[:split_pos]]
+                            + [next_parts[0]]
+                        )
+                        break
+                else:
+                    parts.append(next_parts[0])
+            else:
+                parts.append(next_parts[0])
+
+    if not parts:
+        return None
+
+    name = " ".join(parts)
+    return clean_name(name)
+
+
+def _extract_field_after_label(
+    lines: list[str],
+    label_index: int,
+    label_regex: str,
+) -> str | None:
+    """
+    Generic helper: extract the value after a label on the line at
+    *label_index*, falling back to the next line only if it looks
+    like a name.
+    """
+    line = lines[label_index]
+
+    same_line = re.sub(
+        label_regex,
+        "",
+        line,
+    ).strip()
+
+    same_line = re.sub(
+        r"^[.\-,:;\s]+",
+        "",
+        same_line,
+    ).strip()
+
+    candidate = clean_name(same_line)
+
+    if candidate:
+        return candidate
+
+    # Only fall back to the next line if it looks like a name.
+    if label_index + 1 < len(lines):
+        next_line = lines[label_index + 1]
+        if _looks_like_name(next_line):
+            return clean_name(next_line)
+
+    return None
+
+
 def extract_voter_id_fields(ocr_text: list[str]) -> dict:
     fields = {
         "document_type": "voter_id",
@@ -62,6 +320,9 @@ def extract_voter_id_fields(ocr_text: list[str]) -> dict:
         for line in ocr_text
         if line and line.strip()
     ]
+
+    if not lines:
+        return fields
 
     full_text = "\n".join(lines)
 
@@ -123,27 +384,14 @@ def extract_voter_id_fields(ocr_text: list[str]) -> dict:
             and "husband" not in normalized
         ):
 
-            same_line = re.sub(
-                r"(?i).*?\bname\b\s*[:\-]?\s*",
-                "",
-                line,
-            ).strip()
+            name = _extract_name_from_label(
+                lines,
+                index,
+            )
 
-            candidate = clean_name(same_line)
-
-            if candidate:
-                fields["name"] = candidate
+            if name:
+                fields["name"] = name
                 break
-
-            if index + 1 < len(lines):
-
-                candidate = clean_name(
-                    lines[index + 1]
-                )
-
-                if candidate:
-                    fields["name"] = candidate
-                    break
 
     # =====================================================
     # FATHER / HUSBAND NAME
@@ -160,38 +408,32 @@ def extract_voter_id_fields(ocr_text: list[str]) -> dict:
         ):
             continue
 
-        same_line = re.sub(
+        father_name = _extract_field_after_label(
+            lines,
+            index,
             r"(?i).*?"
             r"(?:father'?s?|husband'?s?|relation)"
             r"\s*(?:name)?\s*[:\-]?\s*",
-            "",
-            line,
-        ).strip()
+        )
 
-        candidate = clean_name(same_line)
-
-        if candidate:
-            fields["father_name"] = candidate
+        if father_name:
+            fields["father_name"] = father_name
             break
-
-        if index + 1 < len(lines):
-
-            candidate = clean_name(
-                lines[index + 1]
-            )
-
-            if candidate:
-                fields["father_name"] = candidate
-                break
 
     # =====================================================
     # GENDER
     # =====================================================
 
+    # OCR frequently corrupts "Gender: Male" into fragments like
+    # "foT/ Gender: yMale:" where "y" is a stray character before
+    # "Male".  Using substring matching (without \b) for the full
+    # word "male"/"female" tolerates these artifacts, while the
+    # single-letter patterns still use \b to avoid matching inside
+    # other words.
     gender_patterns = {
-        "male": r"\bmale\b|\bm\b",
-        "female": r"\bfemale\b|\bf\b",
-        "other": r"\bother\b|\btransgender\b",
+        "male": r"male|\bm\b",
+        "female": r"female|\bf\b",
+        "other": r"other|transgender",
     }
 
     for line in lines:

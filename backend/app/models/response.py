@@ -46,6 +46,15 @@ class DocumentFields(BaseModel):
     passport_number: Optional[str] = None
     surname: Optional[str] = None
     given_names: Optional[str] = None
+
+    # Alias emitted by the passport extractor (and normalised in
+    # document_service) alongside ``given_names``.
+    given_name: Optional[str] = None
+
+    # MRZ vs visual-OCR date disagreements are surfaced as warnings
+    # instead of being silently resolved.
+    date_warnings: Optional[List[str]] = None
+
     nationality: Optional[str] = None
 
     place_of_birth: Optional[str] = None
@@ -120,13 +129,24 @@ class DocumentVerifyResponse(BaseModel):
 
     filename: str
 
-    content_type: str
+    # Optional: some HTTP clients (e.g. plain curl without an explicit
+    # -F "file=...;type=..." part) send no Content-Type at all, which
+    # means UploadFile.content_type is None. Making this Optional
+    # avoids a 500 (pydantic response validation error) on an
+    # otherwise perfectly valid upload.
+    content_type: Optional[str] = None
 
     saved_to: str
 
     processed_file: Optional[str] = None
 
     document_type: Optional[str] = None
+
+    # Top-level classification convenience fields so API consumers
+    # (and the frontend) do not have to reach into nested objects.
+    display_name: Optional[str] = None
+
+    confidence: Optional[float] = None
 
     document: Optional[dict] = None
 

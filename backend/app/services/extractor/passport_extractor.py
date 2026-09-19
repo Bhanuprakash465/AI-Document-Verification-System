@@ -269,61 +269,60 @@ def _extract_mrz(
             ] = expiry
 
     # =====================================================
-    # LINE 1 NAME
+    # LINE 1 NAME - STRICT ICAO TD3
     #
     # P<IND<SURNAME<<GIVEN<NAMES
+    #   0-1  type ("P" + A/Z or "<")
+    #   2-4  issuing country (exactly 3 letters)
+    #   5-43 name (SURNAME<<GIVEN<NAMES)
     #
-    # OCR can produce:
-    #
-    # P<<SURNAME<<GIVEN<NAMES
+    # If the type/country structure is malformed (e.g. specimen
+    # cards or heavy OCR noise produce "P<<SPECIMEN..."), the MRZ
+    # name field is UNRELIABLE: parsing it concatenates unrelated
+    # tokens. In that case the raw MRZ lines are preserved but NO
+    # name fields are fabricated - visual OCR parsing takes over.
     # =====================================================
 
-    if line1.startswith("P"):
+    if (
+        len(line1) >= 5
+        and re.fullmatch(r"P[A-Z<]", line1[0:2])
+        and re.fullmatch(r"[A-Z]{3}", line1[2:5])
+    ):
 
-        name_section = line1[2:]
-
-        # Remove issuing-country area if present.
-        if (
-            len(name_section) >= 3
-            and re.fullmatch(
-                r"[A-Z]{3}",
-                name_section[:3],
-            )
-        ):
-            name_section = name_section[3:]
+        name_section = line1[5:44]
 
         parts = name_section.split(
             "<<",
             1,
         )
 
-        if len(parts) == 2:
+        surname_raw = parts[0].replace(
+            "<",
+            " ",
+        ).strip()
 
-            surname = parts[0].replace(
+        given_raw = (
+            parts[1].replace(
                 "<",
                 " ",
-            )
+            ).strip()
+            if len(parts) == 2
+            else ""
+        )
 
-            given = parts[1].replace(
-                "<",
-                " ",
-            )
+        # Names must be pure A-Z runs - anything else means the
+        # MRZ name field itself is corrupted.
+        if re.fullmatch(
+            r"[A-Z](?:[A-Z .']*[A-Z])?",
+            surname_raw,
+        ) and len(surname_raw) >= 2:
+            result["surname"] = surname_raw
 
-            surname = clean_name(
-                surname
-            )
-
-            given = clean_name(
-                given
-            )
-
-            if surname:
-                result["surname"] = surname
-
-            if given:
-                result[
-                    "given_names"
-                ] = given
+        if re.fullmatch(
+            r"[A-Z](?:[A-Z .']*[A-Z])?",
+            given_raw,
+        ) and len(given_raw) >= 2:
+            result["given_names"] = given_raw
 
     return result
 
@@ -355,7 +354,19 @@ def _find_value_after_label(
                     remainder
                 )
 
-                if remainder:
+                # A same-line remainder must contain at least 3
+                # alphabetic characters. Shorter fragments (e.g.
+                # "ls)" left over from a mangled label such as
+                # "Given Namels)") are label debris, not values -
+                # fall through to the following lines instead.
+                if (
+                    remainder
+                    and sum(
+                        character.isalpha()
+                        for character in remainder
+                    )
+                    >= 3
+                ):
                     return remainder
 
                 # Search next two lines because
@@ -549,6 +560,298 @@ def _infer_issue_expiry(
             ] = parsed[-1][0]
 
 
+def _label_indices(
+    lines: list[str],
+    labels: tuple[str, ...],
+) -> list[int]:
+
+    result = []
+
+    for index, line in enumerate(lines):
+
+        normalized = line.lower()
+
+        if any(
+            label in normalized
+            for label in labels
+        ):
+            result.append(index)
+
+    return result
+
+
+def _dates_with_positions(
+    lines: list[str],
+) -> list[tuple[int, str]]:
+
+    result = []
+
+    for index, line in enumerate(lines):
+
+        for match in DATE_PATTERN.finditer(line):
+
+            value = normalize_date(
+                match.group()
+            )
+
+            if value:
+                result.append((index, value))
+
+    return result
+
+
+def _first_date_on_or_after(
+    label_index: int,
+    dated_lines: list[tuple[int, str]],
+    window: int = 3,
+) -> Optional[tuple[int, str]]:
+
+    for line_index, value in dated_lines:
+
+        if label_index <= line_index <= label_index + window:
+            return (line_index, value)
+
+    return None
+
+
+def _extract_passport_dates(
+    lines: list[str],
+    mrz: dict,
+) -> tuple[Optional[str], Optional[str], Optional[str], list[str]]:
+    """
+    Label-position-aware date extraction.
+
+    Returns (dob, issue, expiry, conflict_warnings).
+
+    Key behaviours:
+      * a date is bound to the NEAREST label preceding it, never
+        to "the first date in the document";
+      * scrambled two-column layouts (OCR emits both dates after
+        the expiry label) are recovered: if the issue label found
+        no date but the expiry label did, and another date follows
+        the expiry date, the first belongs to issue;
+      * MRZ dates are a structured CROSS-CHECK: they fill gaps and
+        disagreements are reported, never silently resolved.
+    """
+
+    warnings: list[str] = []
+
+    dated_lines = _dates_with_positions(lines)
+
+    dob_labels = _label_indices(
+        lines,
+        (
+            "date of birth",
+            "dateofbirth",
+            "dob",
+            "birth",
+        ),
+    )
+
+    issue_labels = _label_indices(
+        lines,
+        (
+            "date of issue",
+            "dateofissue",
+            "issue date",
+            "date issued",
+        ),
+    )
+
+    expiry_labels = _label_indices(
+        lines,
+        (
+            "date of expiry",
+            "dateofexpiry",
+            "expiry date",
+            "date of expiration",
+            "expiration date",
+        ),
+    )
+
+    # -----------------------------------------------------
+    # DOB
+    # -----------------------------------------------------
+
+    dob = None
+
+    for label_index in dob_labels:
+
+        hit = _first_date_on_or_after(
+            label_index,
+            dated_lines,
+        )
+
+        if hit:
+            dob = hit[1]
+            break
+
+    # -----------------------------------------------------
+    # ISSUE
+    # -----------------------------------------------------
+
+    issue = None
+    issue_hit = None
+
+    for label_index in issue_labels:
+
+        hit = _first_date_on_or_after(
+            label_index,
+            dated_lines,
+        )
+
+        if hit:
+            issue_hit = hit
+            issue = hit[1]
+            break
+
+    # -----------------------------------------------------
+    # EXPIRY
+    # -----------------------------------------------------
+
+    expiry = None
+    expiry_hit = None
+
+    for label_index in expiry_labels:
+
+        hit = _first_date_on_or_after(
+            label_index,
+            dated_lines,
+        )
+
+        if hit:
+            expiry_hit = hit
+            expiry = hit[1]
+            break
+
+    # -----------------------------------------------------
+    # SCRAMBLED LAYOUT RECOVERY
+    #
+    # OCR frequently linearises the issue/expiry area so BOTH
+    # dates appear after the "Date of Expiry" label:
+    #
+    #   ... Date of Issue
+    #   ... Date of Expiry
+    #   01/01/2013
+    #   01/01/2023
+    #
+    # If the issue label found no date but the expiry label did,
+    # and another date follows the expiry date, then the date
+    # bound to the expiry label is actually the ISSUE date and
+    # the following one is the EXPIRY date.
+    # -----------------------------------------------------
+
+    if issue is None and expiry_hit is not None:
+
+        following = [
+            (line_index, value)
+            for line_index, value in dated_lines
+            if line_index > expiry_hit[0]
+        ]
+
+        if following:
+            issue = expiry_hit[1]
+            expiry = following[0][1]
+
+    # -----------------------------------------------------
+    # DUPLICATE GUARD
+    #
+    # If issue and expiry resolved to the same date but another
+    # distinct date exists later in the document, the later one
+    # is the expiry (a passport cannot expire on its issue date).
+    # -----------------------------------------------------
+
+    if (
+        issue is not None
+        and expiry is not None
+        and issue == expiry
+        and expiry_hit is not None
+    ):
+
+        following_distinct = [
+            value
+            for line_index, value in dated_lines
+            if line_index > expiry_hit[0]
+            and value != issue
+        ]
+
+        if following_distinct:
+            expiry = following_distinct[0]
+
+    # -----------------------------------------------------
+    # MRZ CROSS-CHECK
+    #
+    # MRZ fills gaps; disagreements produce warnings.
+    # -----------------------------------------------------
+
+    mrz_dob = mrz.get("date_of_birth")
+    mrz_expiry = mrz.get("date_of_expiry")
+
+    if dob is None and mrz_dob:
+        dob = mrz_dob
+    elif (
+        dob is not None
+        and mrz_dob is not None
+        and dob != mrz_dob
+    ):
+        warnings.append(
+            f"MRZ date of birth ({mrz_dob}) disagrees with "
+            f"the visual date of birth ({dob}); the visual "
+            "value was kept."
+        )
+
+    if expiry is None and mrz_expiry:
+        expiry = mrz_expiry
+    elif (
+        expiry is not None
+        and mrz_expiry is not None
+        and expiry != mrz_expiry
+    ):
+        warnings.append(
+            f"MRZ date of expiry ({mrz_expiry}) disagrees with "
+            f"the visual date of expiry ({expiry}); the visual "
+            "value was kept."
+        )
+
+    # -----------------------------------------------------
+    # CHRONOLOGY SANITY
+    #
+    # dob < issue <= expiry must hold where the available dates
+    # permit checking. A violation downgrades issue/expiry to the
+    # chronological ordering of all seen dates when that produces
+    # a consistent triple.
+    # -----------------------------------------------------
+
+    parsed_dob = _parse_date(dob)
+    parsed_issue = _parse_date(issue)
+    parsed_expiry = _parse_date(expiry)
+
+    if (
+        parsed_dob
+        and parsed_issue
+        and parsed_expiry
+        and not (
+            parsed_dob < parsed_issue <= parsed_expiry
+        )
+    ):
+
+        chronological = sorted(
+            (parsed_dob, parsed_issue, parsed_expiry)
+        )
+
+        warnings.append(
+            "Extracted dates violated the expected order "
+            "(birth < issue <= expiry); dates were re-ordered "
+            "chronologically."
+        )
+
+        dob = chronological[0].strftime("%d/%m/%Y")
+        issue = chronological[1].strftime("%d/%m/%Y")
+        expiry = chronological[2].strftime("%d/%m/%Y")
+
+    return dob, issue, expiry, warnings
+
+
 def extract_passport_fields(
     ocr_text: list[str],
 ) -> dict:
@@ -625,93 +928,21 @@ def extract_passport_fields(
             ] = match.group().upper()
 
     # =====================================================
-    # DOB
+    # DATES (label-position aware + MRZ cross-check)
     # =====================================================
 
-    visible_dob = _find_date_after_label(
-        lines,
-        (
-            "date of birth",
-            "dateofbirth",
-            "dob",
-            "birth",
-        ),
+    dob, issue_date, expiry_date, date_warnings = (
+        _extract_passport_dates(
+            lines,
+            mrz,
+        )
     )
 
-    if visible_dob:
-        fields[
-            "date_of_birth"
-        ] = visible_dob
-
-    # MRZ is more reliable than noisy visible OCR.
-    if mrz.get("date_of_birth"):
-        fields[
-            "date_of_birth"
-        ] = mrz[
-            "date_of_birth"
-        ]
-
-    fields["dob"] = (
-        fields["date_of_birth"]
-    )
-
-    # =====================================================
-    # ISSUE DATE
-    # =====================================================
-
-    issue_date = _find_date_after_label(
-        lines,
-        (
-            "date of issue",
-            "dateofissue",
-            "issue date",
-            "date issued",
-        ),
-    )
-
-    if issue_date:
-        fields[
-            "date_of_issue"
-        ] = issue_date
-
-    # =====================================================
-    # EXPIRY
-    # =====================================================
-
-    expiry_date = _find_date_after_label(
-        lines,
-        (
-            "date of expiry",
-            "dateofexpiry",
-            "expiry date",
-            "date of expiration",
-            "expiration date",
-        ),
-    )
-
-    if expiry_date:
-        fields[
-            "date_of_expiry"
-        ] = expiry_date
-
-    # MRZ expiry wins.
-    if mrz.get(
-        "date_of_expiry"
-    ):
-        fields[
-            "date_of_expiry"
-        ] = mrz[
-            "date_of_expiry"
-        ]
-
-    # =====================================================
-    # DATE FALLBACK
-    # =====================================================
-
-    _infer_issue_expiry(
-        fields,
-        lines,
-    )
+    fields["date_of_birth"] = dob
+    fields["dob"] = dob
+    fields["date_of_issue"] = issue_date
+    fields["date_of_expiry"] = expiry_date
+    fields["date_warnings"] = date_warnings
 
     # =====================================================
     # NATIONALITY
@@ -802,6 +1033,7 @@ def extract_passport_fields(
                 lines,
                 (
                     "surname",
+                    "sumname",
                     "sumame",
                     "surnam",
                 ),
